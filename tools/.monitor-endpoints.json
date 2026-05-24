@@ -1,0 +1,70 @@
+[
+  {
+    "method": "GET",
+    "path": "/healthz",
+    "expect": 200,
+    "desc": "헬스체크"
+  },
+  {
+    "method": "GET",
+    "path": "/",
+    "expect": 200,
+    "desc": "메인"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/products",
+    "expect": 200,
+    "desc": "상품 목록"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/products/1",
+    "expect": 200,
+    "desc": "상품 상세"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/orders",
+    "expect": [
+      200,
+      201,
+      401
+    ],
+    "desc": "주문 생성"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/orders",
+    "expect": [
+      200,
+      401
+    ],
+    "desc": "주문 목록"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/auth/login",
+    "expect": [
+      200,
+      400,
+      401
+    ],
+    "desc": "로그인"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/users/me",
+    "expect": [
+      200,
+      401
+    ],
+    "desc": "내 정보"
+  },
+  {
+    "method": "GET",
+    "path": "/nonexistent",
+    "expect": 404,
+    "desc": "404 확인"
+  }
+]

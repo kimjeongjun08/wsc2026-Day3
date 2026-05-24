@@ -1,0 +1,41 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: user-svc
+  namespace: apdev
+spec:
+  type: ClusterIP
+  selector:
+    app: user
+  ports:
+    - protocol: TCP
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: product-svc
+  namespace: apdev
+spec:
+  type: ClusterIP
+  selector:
+    app: product
+  ports:
+    - protocol: TCP
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: stress-svc
+  namespace: apdev
+spec:
+  type: ClusterIP
+  selector:
+    app: stress
+  ports:
+    - protocol: TCP
+      port: 8080
+      targetPort: 8080

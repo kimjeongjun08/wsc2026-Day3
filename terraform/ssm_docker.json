@@ -1,0 +1,11 @@
+{
+  "commands": [
+    "docker rm -f test-user 2>/dev/null || true",
+    "cat > /tmp/app.env << 'ENVFILE'\nMYSQL_USER=admin\nMYSQL_PASSWORD=Skill53##\nMYSQL_HOST=apdev-rds-instance.cdnblsxzzpgz.ap-northeast-2.rds.amazonaws.com\nMYSQL_PORT=3306\nMYSQL_DBNAME=dev\nENVFILE",
+    "docker run -d --name test-user --env-file /tmp/app.env -p 8080:8080 003150130236.dkr.ecr.ap-northeast-2.amazonaws.com/apdev-user:latest",
+    "sleep 5",
+    "docker logs test-user 2>&1",
+    "curl -s http://localhost:8080/healthcheck 2>&1 || echo 'HEALTHCHECK FAILED'",
+    "docker rm -f test-user 2>/dev/null || true"
+  ]
+}

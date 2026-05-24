@@ -1,0 +1,52 @@
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: apdev-pool
+spec:
+  template:
+    metadata:
+      labels:
+        role: worker
+    spec:
+      nodeClassRef:
+        group: karpenter.k8s.aws
+        kind: EC2NodeClass
+        name: apdev-nodeclass
+      requirements:
+        - key: kubernetes.io/arch
+          operator: In
+          values: ["amd64"]
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["on-demand"]
+        - key: node.kubernetes.io/instance-type
+          operator: In
+          values: ["t3.medium"]  # ← 대회 당일 변경 (eksctl.yaml과 동일하게)
+      expireAfter: 720h
+  limits:
+    cpu: "6"
+    memory: 12Gi
+  disruption:
+    consolidationPolicy: WhenEmptyOrUnderutilized
+    consolidateAfter: 60s
+---
+apiVersion: karpenter.k8s.aws/v1
+kind: EC2NodeClass
+metadata:
+  name: apdev-nodeclass
+spec:
+  role: eksctl-apdev-eks-cluster-nodegroup-apdev-ng-NodeInstanceRole-*
+  amiSelectorTerms:
+    - alias: bottlerocket@latest
+  subnetSelectorTerms:
+    - tags:
+        Name: "apdev-priv-*"
+  securityGroupSelectorTerms:
+    - tags:
+        "aws:eks:cluster-name": "apdev-eks-cluster"
+  blockDeviceMappings:
+    - deviceName: /dev/xvda
+      ebs:
+        volumeSize: 20Gi
+        volumeType: gp3
+        deleteOnTermination: true

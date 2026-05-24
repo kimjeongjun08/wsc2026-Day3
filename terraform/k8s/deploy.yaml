@@ -1,0 +1,178 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: apdev
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: user
+  namespace: apdev
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: user
+  template:
+    metadata:
+      labels:
+        app: user
+    spec:
+      terminationGracePeriodSeconds: 30
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: user
+      containers:
+        - name: user
+          image: 003150130236.dkr.ecr.ap-northeast-2.amazonaws.com/apdev-user:latest
+          ports:
+            - containerPort: 8080
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 5"]
+          startupProbe:
+            httpGet:
+              path: /healthcheck
+              port: 8080
+            failureThreshold: 10
+            periodSeconds: 3
+          readinessProbe:
+            httpGet:
+              path: /healthcheck
+              port: 8080
+            periodSeconds: 5
+            failureThreshold: 2
+            successThreshold: 1
+          livenessProbe:
+            httpGet:
+              path: /healthcheck
+              port: 8080
+            periodSeconds: 30
+            failureThreshold: 5
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 100m       # ← 대회 당일 인스턴스 타입에 맞게 조정
+              memory: 128Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: product
+  namespace: apdev
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: product
+  template:
+    metadata:
+      labels:
+        app: product
+    spec:
+      terminationGracePeriodSeconds: 30
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: product
+      containers:
+        - name: product
+          image: 003150130236.dkr.ecr.ap-northeast-2.amazonaws.com/apdev-product:latest
+          ports:
+            - containerPort: 8080
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 5"]
+          startupProbe:
+            httpGet:
+              path: /healthcheck
+              port: 8080
+            failureThreshold: 10
+            periodSeconds: 3
+          readinessProbe:
+            httpGet:
+              path: /healthcheck
+              port: 8080
+            periodSeconds: 5
+            failureThreshold: 2
+            successThreshold: 1
+          livenessProbe:
+            httpGet:
+              path: /healthcheck
+              port: 8080
+            periodSeconds: 30
+            failureThreshold: 5
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 100m       # ← 대회 당일 인스턴스 타입에 맞게 조정
+              memory: 128Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stress
+  namespace: apdev
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: stress
+  template:
+    metadata:
+      labels:
+        app: stress
+    spec:
+      terminationGracePeriodSeconds: 30
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: stress
+      containers:
+        - name: stress
+          image: 003150130236.dkr.ecr.ap-northeast-2.amazonaws.com/apdev-stress:latest
+          ports:
+            - containerPort: 8080
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 5"]
+          startupProbe:
+            httpGet:
+              path: /healthcheck
+              port: 8080
+            failureThreshold: 10
+            periodSeconds: 3
+          readinessProbe:
+            httpGet:
+              path: /healthcheck
+              port: 8080
+            periodSeconds: 5
+            failureThreshold: 2
+            successThreshold: 1
+          livenessProbe:
+            httpGet:
+              path: /healthcheck
+              port: 8080
+            periodSeconds: 30
+            failureThreshold: 5
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 250m       # ← stress는 CPU 많이 먹으니 높게
+              memory: 256Mi
+            limits:
+              cpu: "1"        # ← 격리: 노드 CPU의 절반 이하로 제한
+              memory: 512Mi
