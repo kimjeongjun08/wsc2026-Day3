@@ -1,26 +1,60 @@
 variable "region" {
+  type    = string
   default = "ap-northeast-2"
 }
 
-variable "cluster_name" {
-  default = "apdev-eks-cluster"
+variable "project" {
+  type    = string
+  default = "wsi2026"
 }
 
-variable "db_username" {
-  default = "admin"
+variable "vpc_cidr" {
+  type    = string
+  default = "10.20.0.0/16"
 }
 
-variable "db_password" {
-  description = "RDS admin password"
-  sensitive   = true
-  type        = string
+variable "azs" {
+  type    = list(string)
+  default = ["ap-northeast-2a", "ap-northeast-2b"]
 }
 
-variable "db_name" {
-  default = "dev"
+variable "eks_version" {
+  type    = string
+  default = "1.33"
 }
 
 variable "node_instance_type" {
-  description = "EKS node instance type (대회 당일 변경)"
-  default     = "t3.medium"
+  type        = string
+  description = "EKS 노드 인스턴스 타입 (기본값: t3.medium)"
+}
+
+variable "node_desired_size" {
+  type    = number
+  default = 2
+}
+
+variable "node_max_size" {
+  type    = number
+  default = 4
+}
+
+variable "node_min_size" {
+  type    = number
+  default = 2
+}
+
+variable "db_name" {
+  type    = string
+  default = "dev"
+}
+
+variable "db_instance_class" {
+  type        = string
+  description = "RDS 인스턴스 클래스 (기본값: db.t3.micro)"
+}
+
+variable "app_image_tag" {
+  type        = string
+  default     = "latest"
+  description = "Tag of the user/product/stress images pushed to ECR"
 }

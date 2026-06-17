@@ -1,0 +1,68 @@
+{
+  "Name": "HeaderValidationRule",
+  "Priority": 1,
+  "Statement": {
+    "AndStatement": {
+      "Statements": [
+        {
+          "ByteMatchStatement": {
+            "SearchString": "curl/8.7.1",
+            "FieldToMatch": {
+              "SingleHeader": {
+                "Name": "user-agent"
+              }
+            },
+            "TextTransformations": [
+              {
+                "Priority": 0,
+                "Type": "NONE"
+              }
+            ],
+            "PositionalConstraint": "EXACTLY"
+          }
+        },
+        {
+          "NotStatement": {
+            "Statement": {
+              "RegexMatchStatement": {
+                "RegexString": "^.*",
+                "FieldToMatch": {
+                  "Headers": {
+                    "MatchPattern": {
+                      "ExcludedHeaders": [
+                        "user-agent",
+                        "content-type",
+                        "host",
+                        "Content-Length",
+                        "Accept",
+                        "baggage",
+                        "x-vercel-id",
+                        "Connection"
+                      ]
+                    },
+                    "MatchScope": "ALL",
+                    "OversizeHandling": "CONTINUE"
+                  }
+                },
+                "TextTransformations": [
+                  {
+                    "Priority": 0,
+                    "Type": "NONE"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "Action": {
+    "Allow": {}
+  },
+  "VisibilityConfig": {
+    "SampledRequestsEnabled": true,
+    "CloudWatchMetricsEnabled": true,
+    "MetricName": "HeaderValidationRule"
+  }
+}

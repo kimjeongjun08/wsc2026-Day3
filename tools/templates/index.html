@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html><head>
+<title>Monitor Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:#1a1a2e; color:#eee; font-family:'Segoe UI',sans-serif; }
+nav { background:#0f3460; padding:12px 24px; display:flex; gap:20px; align-items:center; position:sticky; top:0; z-index:100; }
+nav a { color:#aaa; text-decoration:none; padding:6px 14px; border-radius:4px; font-size:14px; }
+nav a.active, nav a:hover { color:#fff; background:#1a1a2e; }
+nav h1 { color:#00d4ff; font-size:16px; margin-right:20px; }
+.page { display:none; padding:20px; }
+.page.active { display:block; }
+.grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:12px; }
+.grid3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; margin-top:12px; }
+.card { background:#16213e; border-radius:8px; padding:16px; border:1px solid #0f3460; }
+.card h3 { color:#00d4ff; font-size:12px; margin-bottom:8px; text-transform:uppercase; }
+.stat { font-size:26px; font-weight:bold; }
+.stat.ok { color:#4caf50; } .stat.warn { color:#ff9800; } .stat.bad { color:#f44336; }
+.mini { font-size:11px; color:#888; margin-top:4px; }
+canvas { max-height:180px; }
+.health-bar { display:flex; gap:16px; flex-wrap:wrap; margin:12px 0; padding:10px; background:#0f3460; border-radius:6px; }
+.health-item { display:flex; align-items:center; gap:5px; font-size:12px; }
+.dot { width:8px; height:8px; border-radius:50%; }
+.dot.g { background:#4caf50; } .dot.r { background:#f44336; }
+table { width:100%; border-collapse:collapse; font-size:12px; }
+td,th { padding:4px 8px; text-align:left; border-bottom:1px solid #0f3460; }
+input[type=number] { width:60px; padding:4px; background:#1a1a2e; border:1px solid #0f3460; color:#eee; border-radius:3px; }
+.btn { padding:6px 14px; border:none; border-radius:4px; cursor:pointer; font-size:12px; color:#fff; }
+.btn-green { background:#4caf50; } .btn-red { background:#f44336; } .btn-blue { background:#2196f3; }
+.btn:hover { opacity:0.8; }
+.toast { position:fixed; bottom:20px; right:20px; background:#333; padding:10px 20px; border-radius:6px; display:none; z-index:999; }
+</style>
+</head><body>
+
+<nav>
+  <h1>Monitor</h1>
+  <a href="#" onclick="showPage('metrics')" id="nav_metrics" class="active">Metrics</a>
+  <a href="#" onclick="showPage('traffic')" id="nav_traffic">Traffic</a>
+  <a href="#" onclick="showPage('scaling')" id="nav_scaling">Scaling</a>
+  <a href="#" onclick="showPage('waf')" id="nav_waf">WAF</a>
+  <a href="#" onclick="showPage('errors')" id="nav_errors">Errors</a>
+  <a href="#" onclick="showPage('cluster')" id="nav_cluster">Cluster</a>
+</nav>
+
+<!-- METRICS PAGE -->
+<div class="page active" id="page_metrics">
+  <div id="alerts"></div>
+  <div class="health-bar" id="health"></div>
+  <div class="grid">
+    <div class="card"><h3>RDS CPU Utilization</h3><canvas id="chart_cpu"></canvas></div>
+    <div class="card"><h3>ALB Requests / min</h3><canvas id="chart_req"></canvas></div>
+    <div class="card"><h3>Response Time (ms)</h3><canvas id="chart_rt"></canvas></div>
+    <div class="card"><h3>ALB Errors (ELB layer)</h3><canvas id="chart_err"></canvas></div>
+    <div class="card"><h3>Target Errors (App layer)</h3><canvas id="chart_tgt_err"></canvas></div>
+    <div class="card"><h3>Success (2xx)</h3><canvas id="chart_2xx"></canvas></div>
+    <div class="card"><h3>RDS IOPS (read/write)</h3><canvas id="chart_rds_io"></canvas></div>
+    <div class="card"><h3>RDS Latency (ms)</h3><canvas id="chart_rds_lat"></canvas></div>
+  </div>
+  <div class="grid3">
+    <div class="card"><h3>RDS CPU</h3><div class="stat" id="v_cpu">-</div><div class="mini">&lt;80%</div></div>
+    <div class="card"><h3>Requests</h3><div class="stat" id="v_req">-</div><div class="mini">/min</div></div>
+    <div class="card"><h3>5xx (ELB+TG)</h3><div class="stat" id="v_5xx">-</div><div class="mini">target: 0</div></div>
+    <div class="card"><h3>User RT</h3><div class="stat" id="v_urt">-</div><div class="mini">&lt;200ms</div></div>
+    <div class="card"><h3>Product RT</h3><div class="stat" id="v_prt">-</div><div class="mini">&lt;200ms</div></div>
+    <div class="card"><h3>Stress RT</h3><div class="stat" id="v_srt">-</div><div class="mini">&lt;1000ms</div></div>
+    <div class="card"><h3>RDS Connections</h3><div class="stat" id="v_conn">-</div><div class="mini">active</div></div>
+    <div class="card"><h3>RDS Free Storage</h3><div class="stat" id="v_free">-</div><div class="mini">GB free</div></div>
+    <div class="card"><h3>Healthy Targets</h3><div class="stat" id="v_healthy">-</div><div class="mini">u / p / s</div></div>
+    <div class="card"><h3>5xx by Target</h3><div class="stat" id="v_t5xx">-</div><div class="mini">u / p / s</div></div>
+  </div>
+  <div class="grid" style="margin-top:12px">
+    <div class="card"><h3>Pod Resource (CPU/Memory)</h3><div id="pod_top"></div></div>
+    <div class="card"><h3>Node Resource</h3><div id="node_top"></div></div>
+  </div>
+</div>
+
+<!-- TRAFFIC PAGE -->
+<div class="page" id="page_traffic">
+  <div class="grid3">
+    <div class="card"><h3>Overall Pattern</h3><div class="stat" id="t_pattern">-</div><div class="mini" id="t_trend"></div></div>
+    <div class="card"><h3>Peak</h3><div class="stat" id="t_peak">-</div><div class="mini">req/min</div></div>
+    <div class="card"><h3>Error Rate</h3><div class="stat" id="t_err">-</div><div class="mini">&lt;1%</div></div>
+  </div>
+  <div class="grid">
+    <div class="card"><h3>Traffic Timeline</h3><canvas id="chart_traffic"></canvas></div>
+    <div class="card"><h3>App Distribution</h3><canvas id="chart_dist"></canvas></div>
+  </div>
+  <div class="card" style="margin-top:12px">
+    <h3>Statistics</h3>
+    <table>
+      <tr><td>Current</td><td id="s_cur">-</td><td>Average</td><td id="s_avg">-</td><td>Duration</td><td id="s_dur">-</td></tr>
+      <tr><td>Peak</td><td id="s_peak">-</td><td>Min</td><td id="s_min">-</td><td>Total Reqs</td><td id="s_total">-</td></tr>
+    </table>
+  </div>
+  <div class="card" style="margin-top:12px">
+    <h3>Traffic Phase Analysis (5min segments)</h3>
+    <div id="phase_timeline" style="margin-top:8px"></div>
+  </div>
+</div>
+
+<!-- SCALING PAGE -->
+<div class="page" id="page_scaling">
+  <div class="grid">
+    <div class="card">
+      <h3>Pod Scaling (Manual)</h3>
+      <div class="mini" style="margin-bottom:12px">HPA OFF 상태에서만 유효</div>
+      <table>
+        <tr><th>App</th><th>Current</th><th>Set Replicas</th><th></th></tr>
+        <tr><td style="color:#00bcd4">user</td><td id="sc_user_cur">-</td><td><input type="number" id="sc_user_val" min="0" max="20" value="1"></td><td><button class="btn btn-blue" onclick="doScale('user')">Apply</button></td></tr>
+        <tr><td style="color:#ff9800">product</td><td id="sc_prod_cur">-</td><td><input type="number" id="sc_prod_val" min="0" max="20" value="1"></td><td><button class="btn btn-blue" onclick="doScale('product')">Apply</button></td></tr>
+        <tr><td style="color:#e040fb">stress</td><td id="sc_stress_cur">-</td><td><input type="number" id="sc_stress_val" min="0" max="20" value="1"></td><td><button class="btn btn-blue" onclick="doScale('stress')">Apply</button></td></tr>
+      </table>
+    </div>
+    <div class="card">
+      <h3>Autoscaling Control</h3>
+      <div style="margin-top:12px">
+        <p style="font-size:13px;margin-bottom:8px">HPA (Pod Autoscaler)</p>
+        <button class="btn btn-green" onclick="toggleHPA('on')">HPA ON</button>
+        <button class="btn btn-red" onclick="toggleHPA('off')">HPA OFF</button>
+        <span class="mini" id="hpa_status"></span>
+      </div>
+      <div style="margin-top:16px">
+        <p style="font-size:13px;margin-bottom:8px">Karpenter (Node Autoscaler)</p>
+        <button class="btn btn-green" onclick="toggleKarpenter('on')">Karpenter ON</button>
+        <button class="btn btn-red" onclick="toggleKarpenter('off')">Karpenter OFF</button>
+        <span class="mini" id="karp_status"></span>
+      </div>
+    </div>
+  </div>
+  <div class="grid" style="margin-top:12px">
+    <div class="card">
+      <h3>HPA Status (live)</h3>
+      <table id="hpa_table"><tr><th>Name</th><th>Target</th><th>Replicas</th><th>CPU util</th><th>min/max</th></tr></table>
+    </div>
+    <div class="card"><h3>Node Count Timeline</h3><canvas id="chart_nodes"></canvas></div>
+  </div>
+  <div class="card" style="margin-top:12px">
+    <h3>Karpenter NodePools</h3>
+    <table id="kpool_table"><tr><th>NodePool</th><th>Ready</th><th>Nodes</th><th>CPU</th><th>Memory</th><th>CPU limit</th></tr></table>
+  </div>
+  <div class="card" style="margin-top:12px">
+    <h3>Karpenter NodeClaims (live provisioning)</h3>
+    <table id="kclaim_table"><tr><th>Name</th><th>Pool</th><th>Type</th><th>Zone</th><th>Capacity</th><th>Node</th><th>Stage</th></tr></table>
+  </div>
+</div>
+
+<!-- WAF PAGE -->
+<div class="page" id="page_waf">
+  <div class="grid3">
+    <div class="card"><h3>Allowed (last sample)</h3><div class="stat ok" id="w_allowed">-</div><div class="mini">requests</div></div>
+    <div class="card"><h3>Blocked (last sample)</h3><div class="stat" id="w_blocked">-</div><div class="mini">requests</div></div>
+    <div class="card"><h3>Block Rate</h3><div class="stat" id="w_rate">-</div><div class="mini">blocked / total</div></div>
+  </div>
+  <div class="grid">
+    <div class="card"><h3>WAF Allowed vs Blocked</h3><canvas id="chart_waf"></canvas></div>
+    <div class="card"><h3>Blocked by Rule (5min)</h3><div id="waf_rules"></div></div>
+  </div>
+  <div class="grid" style="margin-top:12px">
+    <div class="card"><h3>Top Blocked Client IPs (30min)</h3><div id="waf_ips"></div></div>
+    <div class="card"><h3>Top Blocked URIs (30min)</h3><div id="waf_uris"></div></div>
+  </div>
+  <div class="card" style="margin-top:12px">
+    <h3>Top Terminating Rules — Blocked (30min)</h3><div id="waf_trules"></div>
+  </div>
+</div>
+
+<!-- ERRORS PAGE (ALB access logs, 4xx/5xx) -->
+<div class="page" id="page_errors">
+  <div class="grid3">
+    <div class="card"><h3>4xx total</h3><div class="stat warn" id="e_4xx">-</div><div class="mini">recent logs</div></div>
+    <div class="card"><h3>5xx total</h3><div class="stat bad" id="e_5xx">-</div><div class="mini">recent logs</div></div>
+    <div class="card"><h3>By Status</h3><div class="stat" id="e_bystatus" style="font-size:16px">-</div><div class="mini" id="e_lag">ALB → S3 배치 전송: 최대 ~5분 지연</div></div>
+  </div>
+  <div class="card" style="margin-top:12px">
+    <h3>4xx / 5xx Requests — why (ALB access log)</h3>
+    <div id="err_table" style="max-height:560px;overflow:auto"></div>
+  </div>
+</div>
+
+<!-- CLUSTER PAGE -->
+<div class="page" id="page_cluster">
+  <div class="grid">
+    <div class="card"><h3>Pods</h3><div id="pod_list"></div></div>
+    <div class="card"><h3>Nodes</h3><div id="node_list"></div></div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+function showPage(name) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('nav a').forEach(a => a.classList.remove('active'));
+  document.getElementById('page_'+name).classList.add('active');
+  document.getElementById('nav_'+name).classList.add('active');
+}
+function toast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.style.display='block';
+  setTimeout(()=>t.style.display='none', 3000);
+}
+
+const cOpts = {responsive:true,animation:false,scales:{x:{display:false},y:{beginAtZero:true,grid:{color:'#1a3a5c'}}},plugins:{legend:{labels:{color:'#aaa',font:{size:10}}}}};
+const mkChart = (id,labels,ds) => new Chart(document.getElementById(id),{type:'line',data:{labels,datasets:ds},options:cOpts});
+let cpuC,reqC,rtC,errC,tgtErrC,twoxxC,trafficC,distC,rdsIoC,rdsLatC,nodesC,wafC;
+
+function initCharts(d) {
+  const l=d.map(x=>x.ts);
+  cpuC=mkChart('chart_cpu',l,[{label:'CPU%',data:d.map(x=>x.rds_cpu),borderColor:'#00d4ff',fill:false,tension:.3}]);
+  reqC=mkChart('chart_req',l,[{label:'Req',data:d.map(x=>x.alb_req),borderColor:'#ff9800',fill:false,tension:.3}]);
+  rtC=mkChart('chart_rt',l,[
+    {label:'user',data:d.map(x=>x.user_rt||0),borderColor:'#00bcd4',fill:false,tension:.3},
+    {label:'product',data:d.map(x=>x.product_rt||0),borderColor:'#ff9800',fill:false,tension:.3},
+    {label:'stress',data:d.map(x=>x.stress_rt||0),borderColor:'#e040fb',fill:false,tension:.3}]);
+  errC=mkChart('chart_err',l,[
+    {label:'ELB 4xx',data:d.map(x=>x.alb_4xx),borderColor:'#ff9800',fill:false,tension:.3},
+    {label:'ELB 5xx',data:d.map(x=>x.alb_5xx),borderColor:'#f44336',fill:false,tension:.3}]);
+  tgtErrC=mkChart('chart_tgt_err',l,[
+    {label:'TG 4xx',data:d.map(x=>x.tgt_4xx||0),borderColor:'#ff9800',fill:false,tension:.3},
+    {label:'TG 5xx',data:d.map(x=>x.tgt_5xx||0),borderColor:'#f44336',fill:false,tension:.3}]);
+  twoxxC=mkChart('chart_2xx',l,[
+    {label:'ELB 2xx',data:d.map(x=>x.alb_2xx||0),borderColor:'#4caf50',fill:false,tension:.3},
+    {label:'TG 2xx',data:d.map(x=>x.tgt_2xx||0),borderColor:'#81c784',fill:false,tension:.3}]);
+  trafficC=mkChart('chart_traffic',l,[{label:'Total',data:d.map(x=>x.alb_req),borderColor:'#4caf50',fill:true,backgroundColor:'rgba(76,175,80,0.1)',tension:.3}]);
+  rdsIoC=mkChart('chart_rds_io',l,[
+    {label:'read',data:d.map(x=>x.rds_read_iops||0),borderColor:'#00bcd4',fill:false,tension:.3},
+    {label:'write',data:d.map(x=>x.rds_write_iops||0),borderColor:'#ff9800',fill:false,tension:.3}]);
+  rdsLatC=mkChart('chart_rds_lat',l,[
+    {label:'read',data:d.map(x=>x.rds_read_lat||0),borderColor:'#00bcd4',fill:false,tension:.3},
+    {label:'write',data:d.map(x=>x.rds_write_lat||0),borderColor:'#ff9800',fill:false,tension:.3}]);
+  nodesC=mkChart('chart_nodes',l,[{label:'nodes',data:d.map(x=>x.node_count||0),borderColor:'#e040fb',fill:true,backgroundColor:'rgba(224,64,251,0.1)',stepped:true}]);
+  wafC=mkChart('chart_waf',l,[
+    {label:'allowed',data:d.map(x=>x.waf_allowed||0),borderColor:'#4caf50',fill:false,tension:.3},
+    {label:'blocked',data:d.map(x=>x.waf_blocked||0),borderColor:'#f44336',fill:false,tension:.3}]);
+  distC=new Chart(document.getElementById('chart_dist'),{type:'doughnut',data:{labels:['user','product','stress'],datasets:[{data:[0,0,0],backgroundColor:['#00bcd4','#ff9800','#e040fb']}]},options:{plugins:{legend:{labels:{color:'#aaa'}}}}});
+}
+function updateCharts(d) {
+  const l=d.map(x=>x.ts);
+  cpuC.data.labels=l; cpuC.data.datasets[0].data=d.map(x=>x.rds_cpu); cpuC.update();
+  reqC.data.labels=l; reqC.data.datasets[0].data=d.map(x=>x.alb_req); reqC.update();
+  rtC.data.labels=l; rtC.data.datasets[0].data=d.map(x=>x.user_rt||0); rtC.data.datasets[1].data=d.map(x=>x.product_rt||0); rtC.data.datasets[2].data=d.map(x=>x.stress_rt||0); rtC.update();
+  errC.data.labels=l; errC.data.datasets[0].data=d.map(x=>x.alb_4xx); errC.data.datasets[1].data=d.map(x=>x.alb_5xx); errC.update();
+  tgtErrC.data.labels=l; tgtErrC.data.datasets[0].data=d.map(x=>x.tgt_4xx||0); tgtErrC.data.datasets[1].data=d.map(x=>x.tgt_5xx||0); tgtErrC.update();
+  twoxxC.data.labels=l; twoxxC.data.datasets[0].data=d.map(x=>x.alb_2xx||0); twoxxC.data.datasets[1].data=d.map(x=>x.tgt_2xx||0); twoxxC.update();
+  trafficC.data.labels=l; trafficC.data.datasets[0].data=d.map(x=>x.alb_req); trafficC.update();
+  rdsIoC.data.labels=l; rdsIoC.data.datasets[0].data=d.map(x=>x.rds_read_iops||0); rdsIoC.data.datasets[1].data=d.map(x=>x.rds_write_iops||0); rdsIoC.update();
+  rdsLatC.data.labels=l; rdsLatC.data.datasets[0].data=d.map(x=>x.rds_read_lat||0); rdsLatC.data.datasets[1].data=d.map(x=>x.rds_write_lat||0); rdsLatC.update();
+  nodesC.data.labels=l; nodesC.data.datasets[0].data=d.map(x=>x.node_count||0); nodesC.update();
+  wafC.data.labels=l; wafC.data.datasets[0].data=d.map(x=>x.waf_allowed||0); wafC.data.datasets[1].data=d.map(x=>x.waf_blocked||0); wafC.update();
+  const last=d[d.length-1]||{};
+  distC.data.datasets[0].data=[last.user_req||0,last.product_req||0,last.stress_req||0]; distC.update();
+  // WAF stat cards (from timeseries)
+  const wa=last.waf_allowed||0, wb=last.waf_blocked||0, wt=wa+wb;
+  document.getElementById('w_allowed').textContent=Math.round(wa);
+  const wbEl=document.getElementById('w_blocked'); wbEl.textContent=Math.round(wb); wbEl.className='stat '+(wb>0?'bad':'ok');
+  const rate=wt>0?(wb/wt*100):0;
+  const wrEl=document.getElementById('w_rate'); wrEl.textContent=rate.toFixed(2)+'%'; wrEl.className='stat '+(rate>5?'bad':rate>1?'warn':'ok');
+}
+function updateStats(d) {
+  const l=d[d.length-1]||{};
+  const s=(id,v,cls)=>{document.getElementById(id).textContent=v;document.getElementById(id).className='stat '+cls;};
+  s('v_cpu',(l.rds_cpu||0).toFixed(1)+'%', l.rds_cpu>80?'bad':l.rds_cpu>50?'warn':'ok');
+  s('v_req',Math.round(l.alb_req||0),'ok');
+  s('v_5xx',Math.round(l.alb_5xx||0),(l.alb_5xx||0)>0?'bad':'ok');
+  s('v_urt',(l.user_rt||0).toFixed(0)+'ms',(l.user_rt||0)>200?'bad':'ok');
+  s('v_prt',(l.product_rt||0).toFixed(0)+'ms',(l.product_rt||0)>200?'bad':'ok');
+  s('v_srt',(l.stress_rt||0).toFixed(0)+'ms',(l.stress_rt||0)>1000?'bad':'ok');
+  s('v_conn',Math.round(l.rds_conn||0),(l.rds_conn||0)>100?'warn':'ok');
+  s('v_free',(l.rds_free_gb||0).toFixed(1),(l.rds_free_gb||0)<2?'bad':(l.rds_free_gb||0)<5?'warn':'ok');
+  const uh=(l.user_healthy||0), ph=(l.product_healthy||0), sh=(l.stress_healthy||0);
+  const unh=(l.user_unhealthy||0)+(l.product_unhealthy||0)+(l.stress_unhealthy||0);
+  s('v_healthy',`${uh}/${ph}/${sh}`,unh>0?'bad':'ok');
+  const u5=Math.round(l.user_5xx||0),p5=Math.round(l.product_5xx||0),s5=Math.round(l.stress_5xx||0);
+  s('v_t5xx',`${u5}/${p5}/${s5}`,(u5+p5+s5)>0?'bad':'ok');
+  const checks=[['RDS CPU',(l.rds_cpu||0)<80],['No 5xx',(l.alb_5xx||0)==0],['User<200ms',(l.user_rt||0)<200],['Prod<200ms',(l.product_rt||0)<200],['Stress<1s',(l.stress_rt||0)<1000],['All targets healthy',unh==0],['RDS storage',(l.rds_free_gb||0)>=2]];
+  document.getElementById('health').innerHTML=checks.map(([n,ok])=>`<div class="health-item"><div class="dot ${ok?'g':'r'}"></div>${n}</div>`).join('');
+  // threshold alerts
+  const al=[];
+  if((l.rds_cpu||0)>=80) al.push(`RDS CPU high: ${(l.rds_cpu).toFixed(0)}%`);
+  // per-target 5xx breakdown — pinpoint which service is erroring
+  const t5={user:Math.round(l.user_5xx||0),product:Math.round(l.product_5xx||0),stress:Math.round(l.stress_5xx||0)};
+  const off=Object.entries(t5).filter(([k,v])=>v>0);
+  if(off.length) al.push(`5xx by target: ${off.map(([k,v])=>`${k}=${v}`).join(', ')}`);
+  else if((l.alb_5xx||0)>0) al.push(`ELB-level 5xx: ${Math.round(l.alb_5xx)} (no target 5xx → LB/target unavailable)`);
+  if(unh>0) al.push(`${unh} unhealthy target(s)`);
+  if((l.rds_free_gb||0)<2&&l.rds_free_gb!=null) al.push(`RDS free storage low: ${(l.rds_free_gb).toFixed(1)}GB`);
+  if((l.stress_rt||0)>1000) al.push(`Stress RT over 1s: ${(l.stress_rt).toFixed(0)}ms`);
+  const ab=document.getElementById('alerts');
+  ab.innerHTML=al.length?`<div style="background:#5c1a1a;border:1px solid #f44336;border-radius:6px;padding:10px 14px;margin-bottom:8px;font-size:13px"><b style="color:#f44336">⚠ ${al.length} ALERT(S)</b> &nbsp; ${al.join(' &nbsp;•&nbsp; ')}</div>`:'';
+}
+
+async function refreshHPA() {
+  const r=await fetch('/api/hpa'); const hpas=await r.json();
+  let h='<tr><th>Name</th><th>Target</th><th>Replicas</th><th>CPU util</th><th>min/max</th></tr>';
+  if(!hpas.length){h+='<tr><td colspan="5" style="color:#888">no HPA (disabled)</td></tr>';}
+  hpas.forEach(x=>{
+    const cur=x.cur_util==null?'-':x.cur_util+'%', tgt=x.target_util==null?'-':x.target_util+'%';
+    const hot=x.cur_util!=null&&x.target_util!=null&&x.cur_util>=x.target_util;
+    h+=`<tr><td>${x.name}</td><td>${x.ref}</td><td>${x.current}→${x.desired}</td><td style="color:${hot?'#f44336':'#4caf50'}">${cur} / ${tgt}</td><td>${x.min}/${x.max}</td></tr>`;
+  });
+  document.getElementById('hpa_table').innerHTML=h;
+}
+
+async function refreshKarpenter() {
+  const r=await fetch('/api/karpenter'); const k=await r.json();
+  let ph='<tr><th>NodePool</th><th>Ready</th><th>Nodes</th><th>CPU</th><th>Memory</th><th>CPU limit</th></tr>';
+  if(!(k.pools||[]).length){ph+='<tr><td colspan="6" style="color:#888">no NodePool defined</td></tr>';}
+  (k.pools||[]).forEach(p=>{
+    ph+=`<tr><td>${p.name}</td><td style="color:${p.ready?'#4caf50':'#f44336'}">${p.ready?'Ready':'NotReady'}</td><td>${p.nodes}</td><td>${p.cpu}</td><td>${p.memory}</td><td>${p.cpu_limit}</td></tr>`;
+  });
+  document.getElementById('kpool_table').innerHTML=ph;
+  const sc={Ready:'#4caf50',Initialized:'#8bc34a',Registered:'#ff9800',Launched:'#03a9f4',Pending:'#9e9e9e'};
+  let ch='<tr><th>Name</th><th>Pool</th><th>Type</th><th>Zone</th><th>Capacity</th><th>Node</th><th>Stage</th></tr>';
+  if(!(k.claims||[]).length){ch+='<tr><td colspan="7" style="color:#888">no active NodeClaim</td></tr>';}
+  (k.claims||[]).forEach(c=>{
+    ch+=`<tr><td>${c.name}</td><td>${c.pool}</td><td>${c.type}</td><td>${c.zone}</td><td>${c.capacity}</td><td>${c.node}</td><td><span style="padding:2px 6px;border-radius:3px;background:${sc[c.stage]||'#666'};color:#fff">${c.stage}</span></td></tr>`;
+  });
+  document.getElementById('kclaim_table').innerHTML=ch;
+}
+
+async function refreshTraffic() {
+  const r=await fetch('/api/traffic'); const s=await r.json();
+  if(s.status==='collecting')return;
+  const pc={SPIKE:'bad',SURGE:'bad',RAMP_UP:'warn',DROP:'warn',COOLING:'warn',STEADY:'ok',STEADY_HIGH:'ok',STEADY_LOW:'ok',NORMAL:'ok'};
+  document.getElementById('t_pattern').textContent=s.overall_pattern;
+  document.getElementById('t_pattern').className='stat '+(pc[s.overall_pattern]||'ok');
+  document.getElementById('t_trend').textContent=`Trend: ${s.trend_pct>0?'+':''}${s.trend_pct.toFixed(0)}%`;
+  document.getElementById('t_peak').textContent=Math.round(s.peak);
+  document.getElementById('t_err').textContent=s.err_rate.toFixed(3)+'%';
+  document.getElementById('t_err').className='stat '+(s.err_rate>1?'bad':'ok');
+  document.getElementById('s_cur').textContent=Math.round(s.current)+'/min';
+  document.getElementById('s_avg').textContent=Math.round(s.avg)+'/min';
+  document.getElementById('s_peak').textContent=Math.round(s.peak)+'/min';
+  document.getElementById('s_min').textContent=Math.round(s.min)+'/min';
+  document.getElementById('s_total').textContent=Math.round(s.total_reqs);
+  document.getElementById('s_dur').textContent=s.duration_min.toFixed(1)+' min';
+
+  // Phase timeline
+  const colors={SPIKE:'#f44336',SURGE:'#ff5722',RAMP_UP:'#ff9800',DROP:'#2196f3',COOLING:'#03a9f4',STEADY_HIGH:'#4caf50',STEADY_LOW:'#8bc34a',NORMAL:'#9e9e9e'};
+  let html='<div style="display:flex;flex-direction:column;gap:6px">';
+  (s.phases||[]).forEach((p,i)=>{
+    const bg=colors[p.pattern]||'#666';
+    const barW=Math.min(Math.max(p.avg/(s.peak||1)*100,10),100);
+    html+=`<div style="display:flex;align-items:center;gap:10px">
+      <span style="width:90px;font-size:11px;color:#aaa">${p.start}-${p.end}</span>
+      <span style="width:90px;font-size:11px;padding:2px 6px;border-radius:3px;background:${bg};color:#fff;text-align:center">${p.pattern}</span>
+      <div style="flex:1;background:#0f3460;border-radius:3px;height:20px;position:relative">
+        <div style="width:${barW}%;height:100%;background:${bg};border-radius:3px;opacity:0.7"></div>
+        <span style="position:absolute;left:8px;top:2px;font-size:11px">avg:${p.avg} peak:${p.peak} (${p.change_pct>0?'+':''}${p.change_pct}%)</span>
+      </div>
+      <span style="width:200px;font-size:11px;color:#ccc">${p.desc}</span>
+    </div>`;
+  });
+  html+='</div>';
+  document.getElementById('phase_timeline').innerHTML=html;
+}
+
+async function refreshPods() {
+  const r=await fetch('/api/pods'); const pods=await r.json();
+  const c={user:'#00bcd4',product:'#ff9800',stress:'#e040fb'};
+  let h='<table><tr><th>Name</th><th>App</th><th>Status</th><th>Restarts</th><th>Reason</th></tr>';
+  const counts={user:0,product:0,stress:0};
+  const bad={OOMKilled:1,CrashLoopBackOff:1,Error:1,ImagePullBackOff:1,ErrImagePull:1};
+  pods.forEach(p=>{counts[p.app]=(counts[p.app]||0)+1; const rc=(p.reason&&p.reason!=='-')?(bad[p.reason]?'#f44336':'#ff9800'):'#888'; h+=`<tr><td style="color:${c[p.app]||'#fff'}">${p.name}</td><td>${p.app}</td><td style="color:${p.status==='Running'?'#4caf50':'#f44336'}">${p.status}</td><td style="color:${p.restarts>0?'#ff9800':'#888'}">${p.restarts}</td><td style="color:${rc}">${p.reason||'-'}</td></tr>`;});
+  h+='</table>';
+  document.getElementById('pod_list').innerHTML=h;
+  document.getElementById('sc_user_cur').textContent=counts.user;
+  document.getElementById('sc_prod_cur').textContent=counts.product;
+  document.getElementById('sc_stress_cur').textContent=counts.stress;
+}
+async function refreshNodes() {
+  const r=await fetch('/api/nodes'); const nodes=await r.json();
+  // count by instance type (어떤 타입이 몇 대 떠있나 — 타입 무관 동적 집계)
+  const byType={}; nodes.forEach(n=>{const t=n.type||'-';byType[t]=(byType[t]||0)+1;});
+  const ready=nodes.filter(n=>n.status==='Ready').length;
+  let h=`<div class="mini" style="margin-bottom:8px">총 ${nodes.length}대 (Ready ${ready}) · ${Object.entries(byType).map(([t,c])=>`${t}: ${c}`).join(', ')||'-'}</div>`;
+  h+='<table><tr><th>Name</th><th>Status</th><th>Provisioner</th><th>Type</th><th>CPU</th><th>Memory</th></tr>';
+  nodes.forEach(n=>{const kp=n.provisioner==='karpenter';h+=`<tr><td>${n.name}</td><td style="color:${n.status==='Ready'?'#4caf50':'#f44336'}">${n.status}</td><td style="color:${kp?'#e040fb':'#888'}">${kp?'karpenter ('+n.pool+')':'managed'}</td><td>${n.type||'-'}</td><td>${n.cpu}</td><td>${n.memory}</td></tr>`;});
+  h+='</table>';
+  document.getElementById('node_list').innerHTML=h;
+}
+
+async function doScale(app) {
+  const v=document.getElementById('sc_'+app.replace('product','prod')+'_val').value;
+  const r=await fetch(`/api/scale/${app}/${v}`,{method:'POST'}); const j=await r.json();
+  toast(j.ok?`${app} scaled to ${v}`:`Error: ${j.msg}`);
+  setTimeout(refreshPods,2000);
+}
+async function toggleHPA(action) {
+  const r=await fetch(`/api/autoscale/hpa_${action}`,{method:'POST'}); const j=await r.json();
+  document.getElementById('hpa_status').textContent=j.msg;
+  document.getElementById('hpa_status').style.color=action==='on'?'#4caf50':'#f44336';
+  toast(j.msg);
+}
+async function toggleKarpenter(action) {
+  const r=await fetch(`/api/autoscale/karpenter_${action}`,{method:'POST'}); const j=await r.json();
+  document.getElementById('karp_status').textContent=j.msg;
+  document.getElementById('karp_status').style.color=action==='on'?'#4caf50':'#f44336';
+  toast(j.msg);
+}
+
+function kvTable(rows,kcol,vcol,keyf,empty){
+  let h=`<table><tr><th>${kcol}</th><th>${vcol}</th></tr>`;
+  if(!rows.length)h+=`<tr><td colspan="2" style="color:#888">${empty}</td></tr>`;
+  rows.forEach(r=>{h+=`<tr><td>${keyf(r)}</td><td>${r.cnt}</td></tr>`;});
+  return h+'</table>';
+}
+async function refreshWAF() {
+  let k; try{k=await (await fetch('/api/waf')).json();}catch(e){return;}
+  let rh='<table><tr><th>Rule</th><th>Blocked</th></tr>';
+  (k.per_rule||[]).forEach(r=>{rh+=`<tr><td>${r.rule}</td><td style="color:${r.blocked>0?'#f44336':'#888'}">${r.blocked}</td></tr>`;});
+  document.getElementById('waf_rules').innerHTML=rh+'</table>';
+  document.getElementById('waf_ips').innerHTML=kvTable(k.top_ips||[],'Client IP','Blocked',r=>r.ip,'no blocked requests');
+  document.getElementById('waf_uris').innerHTML=kvTable(k.top_uris||[],'URI','Blocked',r=>r.uri,'no blocked requests');
+  document.getElementById('waf_trules').innerHTML=kvTable(k.top_rules||[],'Terminating Rule','Blocked',r=>r.rule,'no blocked requests');
+}
+async function refreshErrors() {
+  let d; try{d=await (await fetch('/api/alb_errors')).json();}catch(e){return;}
+  const bs=d.by_status||{};
+  let n4=0,n5=0; Object.entries(bs).forEach(([s,c])=>{const code=parseInt(s);if(code>=500)n5+=c;else if(code>=400)n4+=c;});
+  document.getElementById('e_4xx').textContent=n4;
+  document.getElementById('e_5xx').textContent=n5;
+  document.getElementById('e_bystatus').textContent=Object.entries(bs).sort().map(([s,c])=>`${s}:${c}`).join('  ')||'none';
+  const sc=s=>{const c=parseInt(s);return c>=500?'#f44336':c>=400?'#ff9800':'#4caf50';};
+  let h='<table><tr><th>Time (UTC)</th><th>Client</th><th>Method</th><th>URL</th><th>ELB</th><th>Target</th><th>RT</th><th>Why</th></tr>';
+  if(!(d.errors||[]).length)h+='<tr><td colspan="8" style="color:#888">no 4xx/5xx in recent logs (또는 아직 S3 미전송)</td></tr>';
+  (d.errors||[]).forEach(e=>{
+    h+=`<tr><td>${(e.time||'').slice(11,19)}</td><td>${e.client}</td><td>${e.method}</td>`+
+       `<td style="max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${e.url}">${e.url}</td>`+
+       `<td style="color:${sc(e.elb_status)};font-weight:bold">${e.elb_status}</td>`+
+       `<td>${e.target_status}</td><td>${e.rt}</td><td style="color:#ffb74d">${e.reason}</td></tr>`;
+  });
+  document.getElementById('err_table').innerHTML=h+'</table>';
+}
+
+async function refresh() {
+  const r=await fetch('/api/metrics'); const d=await r.json();
+  if(!cpuC)initCharts(d); else updateCharts(d);
+  updateStats(d); refreshTraffic(); refreshPods(); refreshNodes(); refreshTop(); refreshHPA(); refreshKarpenter();
+}
+
+async function refreshTop() {
+  const r=await fetch('/api/top'); const d=await r.json();
+  const colors={user:'#00bcd4',product:'#ff9800',stress:'#e040fb'};
+  let ph='<table><tr><th>Pod</th><th>CPU</th><th>Memory</th></tr>';
+  (d.pods||[]).forEach(p=>{
+    const app=['user','product','stress'].find(a=>p.name.includes(a))||'';
+    ph+=`<tr><td style="color:${colors[app]||'#fff'}">${p.name.slice(-25)}</td><td>${p.cpu}</td><td>${p.memory}</td></tr>`;
+  });
+  ph+='</table>';
+  document.getElementById('pod_top').innerHTML=ph;
+  let nh='<table><tr><th>Node</th><th>CPU</th><th>CPU%</th><th>Mem</th><th>Mem%</th></tr>';
+  (d.nodes||[]).forEach(n=>{
+    nh+=`<tr><td>${n.name.slice(-20)}</td><td>${n.cpu}</td><td>${n.cpu_pct}</td><td>${n.memory}</td><td>${n.mem_pct}</td></tr>`;
+  });
+  nh+='</table>';
+  document.getElementById('node_top').innerHTML=nh;
+}
+
+refresh(); setInterval(refresh,5000);
+refreshWAF(); setInterval(refreshWAF,30000);
+refreshErrors(); setInterval(refreshErrors,20000);
+</script>
+</body></html>

@@ -1,15 +1,4 @@
 FROM golang:alpine
-
-COPY product app
-
-RUN chmod +x app
-
-RUN apk add --no-cache curl libc6-compat
-
-ENV MYSQL_USER=admin
-ENV MYSQL_PASSWORD=Skill53##
-ENV MYSQL_HOST=
-ENV MYSQL_PORT=3306
-ENV MYSQL_DBNAME=apdev
-
+COPY user app
+RUN chmod +x app && apk add --no-cache curl libc6-compat
 CMD ["./app"]

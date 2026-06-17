@@ -1,0 +1,32 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: user-pdb
+  namespace: apdev
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: user
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: product-pdb
+  namespace: apdev
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: product
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: stress-pdb
+  namespace: apdev
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: stress

@@ -1,17 +1,28 @@
-resource "aws_ecr_repository" "user" {
-  name                 = "apdev-user"
+resource "aws_ecr_repository" "this" {
+  for_each             = toset(["user", "product", "stress"])
+  name                 = "${local.name}-${each.key}"
   image_tag_mutability = "MUTABLE"
   force_delete         = true
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
 }
 
-resource "aws_ecr_repository" "product" {
-  name                 = "apdev-product"
-  image_tag_mutability = "MUTABLE"
-  force_delete         = true
-}
+resource "aws_ecr_lifecycle_policy" "this" {
+  for_each   = aws_ecr_repository.this
+  repository = each.value.name
 
-resource "aws_ecr_repository" "stress" {
-  name                 = "apdev-stress"
-  image_tag_mutability = "MUTABLE"
-  force_delete         = true
+  policy = jsonencode({
+    rules = [{
+      rulePriority = 1
+      description  = "Keep last 10 images"
+      selection = {
+        tagStatus   = "any"
+        countType   = "imageCountMoreThan"
+        countNumber = 10
+      }
+      action = { type = "expire" }
+    }]
+  })
 }
