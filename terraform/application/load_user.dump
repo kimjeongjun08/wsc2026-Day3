@@ -1,6 +1,6 @@
 -- load_user.dump : user 초기 데이터 1000행 (id=dbdump<N>, start=1)
 -- 적재: mysql -h <host> -u <user> -p dev < sql/load_user.dump
-USE `apdev`;
+USE `dev`;
 SET autocommit=0;
 SET unique_checks=0;
 SET foreign_key_checks=0;

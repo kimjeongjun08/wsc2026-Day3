@@ -114,12 +114,12 @@ resource "aws_s3_object" "k8s_configmap" {
   })
 }
 
-# dump 로드
+# Upload dump.sql (setup 버킷) - 대회 당일 실제 dump로 교체
 resource "aws_s3_object" "dump_sql" {
   bucket = aws_s3_bucket.setup.bucket
   key    = "load_user.dump"
-  source = "${path.module}/load_user.dump"
-  etag   = filemd5("${path.module}/load_user.dump")
+  source = "${path.module}/application/load_user.dump"
+  etag   = filemd5("${path.module}/application/load_user.dump")
 }
 
 resource "aws_instance" "bastion" {

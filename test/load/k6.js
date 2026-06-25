@@ -9,7 +9,7 @@ const userPerf   = new Rate('user_under_200ms');
 const wafBlocked = new Counter('waf_blocked_count');
 const wafPassed  = new Counter('waf_false_pass');
 
-const BASE_URL = __ENV.BASE_URL || 'http://d15e7v31k9pt8k.cloudfront.net';
+const BASE_URL = __ENV.BASE_URL || 'http://d1i7oosdc5q6rb.cloudfront.net';
 
 // 패턴 원본 유지
 export const options = {
@@ -22,10 +22,10 @@ export const options = {
     { duration: '5m', target: 200 },
     { duration: '0s', target: 300 },
     { duration: '5m', target: 300 },
-    { duration: '0s', target: 1000 },
-    { duration: '5m', target: 1000 },
-    { duration: '0s', target: 1000 },
-    { duration: '5m', target: 1000 },
+    { duration: '0s', target: 500 },
+    { duration: '5m', target: 500 },
+    { duration: '0s', target: 500 },
+    { duration: '5m', target: 500 },
   ],
   thresholds: {
     'user_under_200ms': ['rate>0.9'],

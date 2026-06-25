@@ -384,8 +384,8 @@ async function refreshNodes() {
   const byType={}; nodes.forEach(n=>{const t=n.type||'-';byType[t]=(byType[t]||0)+1;});
   const ready=nodes.filter(n=>n.status==='Ready').length;
   let h=`<div class="mini" style="margin-bottom:8px">총 ${nodes.length}대 (Ready ${ready}) · ${Object.entries(byType).map(([t,c])=>`${t}: ${c}`).join(', ')||'-'}</div>`;
-  h+='<table><tr><th>Name</th><th>Status</th><th>Provisioner</th><th>Type</th><th>CPU</th><th>Memory</th></tr>';
-  nodes.forEach(n=>{const kp=n.provisioner==='karpenter';h+=`<tr><td>${n.name}</td><td style="color:${n.status==='Ready'?'#4caf50':'#f44336'}">${n.status}</td><td style="color:${kp?'#e040fb':'#888'}">${kp?'karpenter ('+n.pool+')':'managed'}</td><td>${n.type||'-'}</td><td>${n.cpu}</td><td>${n.memory}</td></tr>`;});
+  h+='<table><tr><th>Name</th><th>Status</th><th>Provisioner</th><th>Type</th><th>CPU</th><th>Memory</th><th></th></tr>';
+  nodes.forEach(n=>{const kp=n.provisioner==='karpenter';h+=`<tr><td>${n.name}</td><td style="color:${n.status==='Ready'?'#4caf50':'#f44336'}">${n.status}</td><td style="color:${kp?'#e040fb':'#888'}">${kp?'karpenter ('+n.pool+')':'managed'}</td><td>${n.type||'-'}</td><td>${n.cpu}</td><td>${n.memory}</td><td>${kp?`<button class="btn btn-red" style="padding:2px 8px;font-size:11px" onclick="drainNode('${n.name}')">Drain</button>`:''}</td></tr>`;});
   h+='</table>';
   document.getElementById('node_list').innerHTML=h;
 }
@@ -407,6 +407,13 @@ async function toggleKarpenter(action) {
   document.getElementById('karp_status').textContent=j.msg;
   document.getElementById('karp_status').style.color=action==='on'?'#4caf50':'#f44336';
   toast(j.msg);
+}
+async function drainNode(name) {
+  if(!confirm(`${name} 노드를 drain 하시겠습니까?`)) return;
+  toast(`${name} draining...`);
+  const r=await fetch(`/api/node/drain/${name}`,{method:'POST'}); const j=await r.json();
+  toast(j.ok?`✓ ${name} drained`:`✗ ${j.msg}`);
+  setTimeout(refreshNodes,5000);
 }
 async function applyNodepoolLimits() {
   const cpu=document.getElementById('np_cpu').value;

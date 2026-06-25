@@ -1,360 +1,397 @@
 #!/usr/bin/env python3
-import subprocess
+"""
+AWS WAF 로그에서 헤더 정보를 실시간으로 모니터링하고 1분 단위 통계를 생성하는 스크립트
+"""
+
+import boto3
 import json
-import sys
 import time
-import threading
-import curses
-import asciichartpy
+import os
 from datetime import datetime, timedelta
-from collections import deque
+from typing import Dict, List, Optional
+from collections import defaultdict, Counter
+import threading
 
-sys.stdout.reconfigure(encoding='utf-8')
-
-REGION = "ap-northeast-2"
-config = {"lb_arn": "", "user_tg": "", "product_tg": "", "stress_tg": "",
-          "rds_id": "apdev-rds-instance"}
-
-cache = {"metrics": {}, "ts": 0}
-history = deque(maxlen=240)  # 4분 x 60 = 240 (15초 간격이면 1시간)
-
-
-def cw_get(namespace, metric, dimensions, stat="Average", period=60):
-    end = datetime.utcnow()
-    start = end - timedelta(minutes=5)
-    dim_args = []
-    for k, v in dimensions.items():
-        dim_args.extend(["--dimensions", f"Name={k},Value={v}"])
-    cmd = ["aws", "cloudwatch", "get-metric-statistics",
-           "--namespace", namespace, "--metric-name", metric,
-           "--start-time", start.strftime("%Y-%m-%dT%H:%M:%S"),
-           "--end-time", end.strftime("%Y-%m-%dT%H:%M:%S"),
-           "--period", str(period), "--statistics", stat,
-           "--region", REGION] + dim_args
-    try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
-        pts = sorted(json.loads(r.stdout).get("Datapoints", []), key=lambda x: x["Timestamp"])
-        return pts[-1].get(stat, 0) if pts else 0
-    except:
-        return 0
-
-
-def fetch_loop():
-    while True:
-        lb = config["lb_arn"]
-        if not lb:
-            time.sleep(2)
-            continue
-        m = {}
-        m["rds_cpu"] = cw_get("AWS/RDS", "CPUUtilization", {"DBInstanceIdentifier": config["rds_id"]})
-        m["rds_conn"] = cw_get("AWS/RDS", "DatabaseConnections", {"DBInstanceIdentifier": config["rds_id"]}, "Sum")
-        m["alb_req"] = cw_get("AWS/ApplicationELB", "RequestCount", {"LoadBalancer": lb}, "Sum")
-        m["alb_4xx"] = cw_get("AWS/ApplicationELB", "HTTPCode_ELB_4XX_Count", {"LoadBalancer": lb}, "Sum")
-        m["alb_5xx"] = cw_get("AWS/ApplicationELB", "HTTPCode_ELB_5XX_Count", {"LoadBalancer": lb}, "Sum")
-        m["tgt_5xx"] = cw_get("AWS/ApplicationELB", "HTTPCode_Target_5XX_Count", {"LoadBalancer": lb}, "Sum")
-        for name, tg in [("user", config["user_tg"]), ("product", config["product_tg"]), ("stress", config["stress_tg"])]:
-            if tg:
-                m[f"{name}_rt"] = cw_get("AWS/ApplicationELB", "TargetResponseTime", {"TargetGroup": tg, "LoadBalancer": lb})
-                m[f"{name}_req"] = cw_get("AWS/ApplicationELB", "RequestCount", {"TargetGroup": tg, "LoadBalancer": lb}, "Sum")
-        cache["metrics"] = m
-        cache["ts"] = time.time()
-        history.append({"ts": time.time(), **m})
-        time.sleep(15)
-
-
-def safe_addstr(stdscr, y, x, text, *args):
-    try:
-        if 0 <= y:
-            stdscr.addstr(y, x, str(text)[:200], *args)
-    except curses.error:
-        pass
-
-
-def render_chart(data, width, height):
-    if not data or all(v == 0 for v in data):
-        return ["  (no data)"] * height
-    trimmed = list(data)[-width:]
-    try:
-        chart = asciichartpy.plot(trimmed, {"height": height, "width": width, "format": "{:6.0f}"})
-        return chart.split("\n")
-    except:
-        return ["  (chart error)"] * height
-
-
-def draw_metrics_tab(stdscr, height, width):
-    m = cache.get("metrics", {})
-    age = int(time.time() - cache["ts"]) if cache["ts"] else 999
-    hist = list(history)
-    chart_w = min(50, (width - 10) // 2)
-    chart_h = 8
-
-    y = 2
-
-    # ── RDS CPU Graph ──
-    safe_addstr(stdscr, y, 1, f"RDS CPU % (current: {m.get('rds_cpu', 0):.1f}%)", curses.A_BOLD | curses.color_pair(1))
-    safe_addstr(stdscr, y, chart_w + 15, f"ALB Requests/min (current: {m.get('alb_req', 0):.0f})", curses.A_BOLD | curses.color_pair(2))
-    y += 1
-
-    cpu_data = [h.get("rds_cpu", 0) for h in hist]
-    req_data = [h.get("alb_req", 0) for h in hist]
-    cpu_lines = render_chart(cpu_data, chart_w, chart_h)
-    req_lines = render_chart(req_data, chart_w, chart_h)
-
-    for i in range(max(len(cpu_lines), len(req_lines))):
-        if i < len(cpu_lines):
-            safe_addstr(stdscr, y + i, 1, cpu_lines[i], curses.color_pair(1))
-        if i < len(req_lines):
-            safe_addstr(stdscr, y + i, chart_w + 15, req_lines[i], curses.color_pair(2))
-
-    y += chart_h + 2
-
-    # ── Response Time Graph ──
-    safe_addstr(stdscr, y, 1, "Response Time ms (user/product/stress)", curses.A_BOLD | curses.color_pair(3))
-    safe_addstr(stdscr, y, chart_w + 15, "Errors (5xx)", curses.A_BOLD | curses.color_pair(4))
-    y += 1
-
-    # 가장 높은 RT 앱 그래프
-    user_rt = [h.get("user_rt", 0) * 1000 for h in hist]
-    prod_rt = [h.get("product_rt", 0) * 1000 for h in hist]
-    stress_rt = [h.get("stress_rt", 0) * 1000 for h in hist]
-    # stress가 보통 가장 높으니 stress 기준
-    rt_lines = render_chart(stress_rt, chart_w, chart_h)
-    err_data = [h.get("alb_5xx", 0) + h.get("tgt_5xx", 0) for h in hist]
-    err_lines = render_chart(err_data, chart_w, chart_h)
-
-    for i in range(max(len(rt_lines), len(err_lines))):
-        if i < len(rt_lines):
-            safe_addstr(stdscr, y + i, 1, rt_lines[i], curses.color_pair(3))
-        if i < len(err_lines):
-            safe_addstr(stdscr, y + i, chart_w + 15, err_lines[i], curses.color_pair(4))
-
-    y += chart_h + 2
-
-    # ── Summary Table ──
-    safe_addstr(stdscr, y, 1, "CURRENT VALUES", curses.A_BOLD)
-    y += 1
-    safe_addstr(stdscr, y, 1, f"{'Metric':<25}{'Value':>10}  {'Status'}")
-    y += 1
-    safe_addstr(stdscr, y, 1, "-" * 50)
-    y += 1
-
-    rows = [
-        ("RDS CPU", f"{m.get('rds_cpu',0):.1f}%", m.get('rds_cpu',0) < 80),
-        ("RDS Connections", f"{m.get('rds_conn',0):.0f}", True),
-        ("ALB Requests/min", f"{m.get('alb_req',0):.0f}", True),
-        ("ALB 4xx", f"{m.get('alb_4xx',0):.0f}", m.get('alb_4xx',0) == 0),
-        ("ALB 5xx", f"{m.get('alb_5xx',0):.0f}", m.get('alb_5xx',0) == 0),
-        ("user RT", f"{m.get('user_rt',0)*1000:.0f}ms", m.get('user_rt',0)*1000 < 200),
-        ("product RT", f"{m.get('product_rt',0)*1000:.0f}ms", m.get('product_rt',0)*1000 < 200),
-        ("stress RT", f"{m.get('stress_rt',0)*1000:.0f}ms", m.get('stress_rt',0)*1000 < 1000),
-    ]
-    for label, val, ok in rows:
-        c = curses.color_pair(5) if ok else curses.color_pair(4)
-        mark = "OK" if ok else "!!"
-        safe_addstr(stdscr, y, 1, f"  {label:<23}{val:>10}  [{mark}]", c)
-        y += 1
-
-
-def draw_traffic_tab(stdscr, height, width):
-    hist = list(history)
-    y = 2
-
-    if len(hist) < 3:
-        safe_addstr(stdscr, y, 1, "  Collecting data... (need at least 3 samples)", curses.color_pair(2))
-        return
-
-    chart_w = min(60, width - 15)
-    chart_h = 10
-
-    # ── Traffic Graph ──
-    safe_addstr(stdscr, y, 1, "TRAFFIC TIMELINE (req/min)", curses.A_BOLD)
-    y += 1
-    totals = [h.get("alb_req", 0) for h in hist]
-    lines = render_chart(totals, chart_w, chart_h)
-    for line in lines:
-        safe_addstr(stdscr, y, 1, line, curses.color_pair(5))
-        y += 1
-    y += 1
-
-    # ── Statistics Table ──
-    safe_addstr(stdscr, y, 1, "STATISTICS", curses.A_BOLD)
-    y += 1
-
-    current = totals[-1]
-    peak = max(totals)
-    avg = sum(totals) / len(totals)
-    minimum = min(totals)
-    total_reqs = sum(totals)
-    duration_min = len(totals) * 15 / 60  # 15초 간격
-
-    safe_addstr(stdscr, y, 1, f"  {'Current:':<15}{current:>8.0f} req/min")
-    safe_addstr(stdscr, y, 35, f"{'Peak:':<15}{peak:>8.0f} req/min")
-    y += 1
-    safe_addstr(stdscr, y, 1, f"  {'Average:':<15}{avg:>8.0f} req/min")
-    safe_addstr(stdscr, y, 35, f"{'Min:':<15}{minimum:>8.0f} req/min")
-    y += 1
-    safe_addstr(stdscr, y, 1, f"  {'Total reqs:':<15}{total_reqs:>8.0f}")
-    safe_addstr(stdscr, y, 35, f"{'Duration:':<15}{duration_min:>7.1f} min")
-    y += 2
-
-    # ── Trend Analysis ──
-    safe_addstr(stdscr, y, 1, "TREND ANALYSIS", curses.A_BOLD)
-    y += 1
-
-    # 구간 분석 (5개 구간으로 나눔)
-    segments = min(5, len(totals) // 3)
-    seg_size = len(totals) // segments if segments > 0 else len(totals)
-
-    safe_addstr(stdscr, y, 1, f"  {'Segment':<12}{'Avg':>8}{'Peak':>8}{'Trend':>8}")
-    y += 1
-    safe_addstr(stdscr, y, 1, "  " + "-" * 40)
-    y += 1
-
-    prev_avg = 0
-    for i in range(segments):
-        seg = totals[i * seg_size:(i + 1) * seg_size]
-        if not seg:
-            continue
-        seg_avg = sum(seg) / len(seg)
-        seg_peak = max(seg)
-        if prev_avg > 0:
-            change = (seg_avg - prev_avg) / prev_avg * 100
-            arrow = f"+{change:.0f}%" if change > 0 else f"{change:.0f}%"
-            c = curses.color_pair(4) if change > 30 else curses.color_pair(2) if change > 0 else curses.color_pair(1)
-        else:
-            arrow = "-"
-            c = 0
-        safe_addstr(stdscr, y, 1, f"  {f'#{i+1}':<12}{seg_avg:>8.0f}{seg_peak:>8.0f}")
-        safe_addstr(stdscr, y, 35, f"{arrow:>8}", c)
-        prev_avg = seg_avg
-        y += 1
-
-    y += 1
-
-    # ── Pattern Detection ──
-    safe_addstr(stdscr, y, 1, "PATTERN", curses.A_BOLD)
-    y += 1
-
-    recent = totals[-5:]
-    older = totals[-15:-5] if len(totals) >= 15 else totals[:5]
-    avg_r = sum(recent) / len(recent) if recent else 0
-    avg_o = sum(older) / len(older) if older else 1
-
-    ratio = avg_r / max(avg_o, 1)
-    if ratio > 2:
-        safe_addstr(stdscr, y, 1, "  [SPIKE] Sudden traffic surge detected!", curses.color_pair(4))
-    elif ratio > 1.3:
-        safe_addstr(stdscr, y, 1, "  [RAMP UP] Traffic gradually increasing", curses.color_pair(2))
-    elif ratio < 0.5:
-        safe_addstr(stdscr, y, 1, "  [DROP] Traffic dropping significantly", curses.color_pair(1))
-    elif ratio < 0.8:
-        safe_addstr(stdscr, y, 1, "  [COOLING] Traffic decreasing", curses.color_pair(1))
-    else:
-        safe_addstr(stdscr, y, 1, "  [STEADY] Traffic stable", curses.color_pair(5))
-    y += 1
-
-    # 에러율 추이
-    errs = [h.get("alb_5xx", 0) + h.get("tgt_5xx", 0) for h in hist]
-    total_err = sum(errs)
-    err_rate = total_err / max(total_reqs, 1) * 100
-    c = curses.color_pair(4) if err_rate > 1 else curses.color_pair(5)
-    safe_addstr(stdscr, y, 1, f"  Error rate: {err_rate:.3f}% ({total_err:.0f}/{total_reqs:.0f})", c)
-    y += 1
-
-    # 앱별 비율
-    y += 1
-    safe_addstr(stdscr, y, 1, "APP DISTRIBUTION", curses.A_BOLD)
-    y += 1
-    cur_total = current if current > 0 else 1
-    for name, cp in [("user", 1), ("product", 2), ("stress", 3)]:
-        rq = cache.get("metrics", {}).get(f"{name}_req", 0)
-        pct = rq / cur_total * 100
-        bar = "#" * int(pct / 3) + "." * (33 - int(pct / 3))
-        safe_addstr(stdscr, y, 1, f"  {name:<8}", curses.color_pair(cp))
-        safe_addstr(stdscr, y, 11, f"[{bar}] {pct:.1f}% ({rq:.0f})")
-        y += 1
-
-
-def draw(stdscr):
-    curses.start_color()
-    curses.use_default_colors()
-    curses.init_pair(1, curses.COLOR_CYAN, -1)
-    curses.init_pair(2, curses.COLOR_YELLOW, -1)
-    curses.init_pair(3, curses.COLOR_MAGENTA, -1)
-    curses.init_pair(4, curses.COLOR_RED, -1)
-    curses.init_pair(5, curses.COLOR_GREEN, -1)
-    curses.init_pair(6, curses.COLOR_WHITE, -1)
-    curses.curs_set(0)
-    mode = 0
-
-    while True:
-        stdscr.timeout(500)
-        key = stdscr.getch()
-        if key == ord('q'):
-            break
-        elif key == ord('1'):
-            mode = 0
-        elif key == ord('2'):
-            mode = 1
-        elif key == 9:
-            mode = (mode + 1) % 2
-
-        height, width = stdscr.getmaxyx()
-        stdscr.erase()
-
-        age = int(time.time() - cache["ts"]) if cache["ts"] else 999
-        tabs = ["[1]Metrics", "[2]Traffic"]
-        tabs[mode] = f">{tabs[mode]}"
-        ts = datetime.now().strftime("%H:%M:%S")
-        safe_addstr(stdscr, 0, 1, f" Monitor | {'  '.join(tabs)} | {ts} | data:{age}s ago | q=quit "[:width-1], curses.A_BOLD)
-
-        if mode == 0:
-            draw_metrics_tab(stdscr, height, width)
-        else:
-            draw_traffic_tab(stdscr, height, width)
-
-        stdscr.refresh()
-
-
-def prompt_config():
-    print("\n=== Monitor Setup ===\n")
-    lb = input("  ALB ARN suffix (Enter=auto): ").strip()
-    if not lb:
+class WAFHeaderMonitor:
+    def __init__(self, region_name: str = 'us-east-1'):
+        """
+        WAF 헤더 모니터링 클래스 초기화
+        
+        Args:
+            region_name: AWS 리전 이름
+        """
+        self.client = boto3.client('logs', region_name=region_name)
+        self.log_group = 'aws-waf-logs-cloudwatch'
+        self.log_stream = 'cloudfront_apdev-waf_0'
+        self.last_timestamp = None
+        
+        # 통계 수집용 변수들
+        self.header_stats = defaultdict(lambda: defaultdict(int))  # {minute: {header_key_value: count}}
+        self.current_minute_headers = Counter()  # 현재 분의 헤더 카운트 (키=값 형태)
+        self.last_minute = None
+        self.stats_lock = threading.Lock()
+        
+    def get_log_events(self, start_time: Optional[int] = None) -> List[Dict]:
+        """
+        CloudWatch Logs에서 로그 이벤트를 가져옴
+        
+        Args:
+            start_time: 시작 타임스탬프 (밀리초)
+            
+        Returns:
+            로그 이벤트 리스트
+        """
         try:
-            r = subprocess.run(["aws", "elbv2", "describe-load-balancers", "--query",
-                               "LoadBalancers[0].LoadBalancerArn", "--output", "text", "--region", REGION],
-                              capture_output=True, text=True, timeout=5)
-            full = r.stdout.strip()
-            lb = full.split("loadbalancer/")[1] if "loadbalancer/" in full else ""
-            print(f"  -> {lb}")
-        except:
-            lb = input("  Enter manually: ").strip()
-    config["lb_arn"] = lb
+            params = {
+                'logGroupName': self.log_group,
+                'logStreamName': self.log_stream,
+                'startFromHead': False  # 최신 로그부터 가져오기
+            }
+            
+            if start_time:
+                params['startTime'] = start_time
+                
+            response = self.client.get_log_events(**params)
+            return response.get('events', [])
+            
+        except Exception as e:
+            print(f"로그 이벤트 가져오기 실패: {e}")
+            return []
+    
+    def parse_waf_log(self, log_message: str) -> Optional[Dict]:
+        """
+        WAF 로그 메시지를 파싱하여 JSON 객체로 변환
+        
+        Args:
+            log_message: 로그 메시지 문자열
+            
+        Returns:
+            파싱된 JSON 객체 또는 None
+        """
+        try:
+            return json.loads(log_message)
+        except json.JSONDecodeError as e:
+            print(f"JSON 파싱 실패: {e}")
+            return None
+    
+    def extract_headers(self, waf_log: Dict) -> List[Dict]:
+        """
+        WAF 로그에서 헤더 정보 추출
+        
+        Args:
+            waf_log: 파싱된 WAF 로그 JSON
+            
+        Returns:
+            헤더 리스트
+        """
+        try:
+            http_request = waf_log.get('httpRequest', {})
+            headers = http_request.get('headers', [])
+            return headers
+        except Exception as e:
+            print(f"헤더 추출 실패: {e}")
+            return []
+    
+    def update_header_stats(self, headers: List[Dict], timestamp: int):
+        """
+        헤더 통계 업데이트
+        
+        Args:
+            headers: 헤더 리스트
+            timestamp: 타임스탬프 (밀리초)
+        """
+        dt = datetime.fromtimestamp(timestamp / 1000)
+        current_minute_key = dt.strftime('%Y-%m-%d %H:%M')
+        
+        with self.stats_lock:
+            # 새로운 분이 시작되면 이전 분 통계를 저장하고 초기화
+            if self.last_minute and self.last_minute != current_minute_key:
+                if self.current_minute_headers:
+                    self.header_stats[self.last_minute] = dict(self.current_minute_headers)
+                    self.save_minute_stats(self.last_minute, dict(self.current_minute_headers))
+                self.current_minute_headers.clear()
+            
+            # 현재 분의 헤더 카운트 증가 (키=값 형태로 저장)
+            for header in headers:
+                header_name = header.get('name', 'unknown')
+                header_value = header.get('value', '')
+                # 헤더 키=값 형태로 저장
+                header_key_value = f"{header_name}={header_value}"
+                self.current_minute_headers[header_key_value] += 1
+            
+            self.last_minute = current_minute_key
+    
+    def save_minute_stats(self, minute_key: str, header_counts: Dict[str, int]):
+        """
+        1분 단위 통계를 텍스트 파일로 저장
+        
+        Args:
+            minute_key: 분 단위 키 (YYYY-MM-DD HH:MM)
+            header_counts: 헤더별 카운트 (키=값 형태)
+        """
+        try:
+            # 통계 디렉토리 생성
+            stats_dir = "waf_header_stats"
+            if not os.path.exists(stats_dir):
+                os.makedirs(stats_dir)
+            
+            # 파일명 생성 (콜론을 언더스코어로 변경)
+            safe_minute = minute_key.replace(':', '_').replace(' ', '_')
+            filename = f"{stats_dir}/stats_{safe_minute}.txt"
+            
+            # 통계 데이터 준비
+            sorted_headers = sorted(header_counts.items(), key=lambda x: x[1], reverse=True)
+            total_requests = sum(header_counts.values())
+            unique_headers = len(header_counts)
+            
+            # 텍스트 파일로 저장
+            with open(filename, 'w', encoding='utf-8') as f:
+                f.write(f"시간: {minute_key}\n")
+                f.write(f"총요청: {total_requests}\n")
+                f.write(f"유니크헤더: {unique_headers}\n")
+                f.write("\n=== 헤더 통계 (키=값) ===\n")
+                
+                for header_key_value, count in sorted_headers:
+                    f.write(f"{header_key_value}: {count}\n")
+            
+            # 콘솔에 통계 출력
+            stats_data = {
+                'timestamp': minute_key,
+                'total_requests': total_requests,
+                'unique_headers': unique_headers,
+                'most_common': sorted_headers[:5],
+                'least_common': sorted_headers[-5:] if len(sorted_headers) >= 5 else sorted_headers,
+                'all_headers': dict(sorted_headers)
+            }
+            self.print_minute_stats(minute_key, stats_data)
+            
+        except Exception as e:
+            print(f"통계 저장 실패: {e}")
+    
+    def print_minute_stats(self, minute_key: str, stats_data: Dict):
+        """
+        1분 단위 통계를 콘솔에 예쁘게 출력
+        
+        Args:
+            minute_key: 분 단위 키
+            stats_data: 통계 데이터
+        """
+        # 색상 코드
+        BLUE = '\033[94m'
+        GREEN = '\033[92m'
+        YELLOW = '\033[93m'
+        RED = '\033[91m'
+        PURPLE = '\033[95m'
+        CYAN = '\033[96m'
+        WHITE = '\033[97m'
+        BOLD = '\033[1m'
+        RESET = '\033[0m'
+        
+        print(f"\n{BOLD}{PURPLE}{'📊' * 20} 1분 통계 {'📊' * 20}{RESET}")
+        print(f"{BOLD}{CYAN}⏰ 시간:{RESET} {YELLOW}{minute_key}{RESET}")
+        print(f"{BOLD}{CYAN}📈 총 요청:{RESET} {GREEN}{stats_data['total_requests']}{RESET}")
+        print(f"{BOLD}{CYAN}🔢 유니크 헤더=값:{RESET} {GREEN}{stats_data['unique_headers']}{RESET}")
+        
+        print(f"\n{BOLD}{GREEN}🔥 가장 많이 사용된 헤더=값 TOP 5:{RESET}")
+        for i, (header_key_value, count) in enumerate(stats_data['most_common'], 1):
+            icon = ['🥇', '🥈', '🥉', '🏅', '🎖️'][i-1] if i <= 5 else '🔸'
+            # 헤더=값이 너무 길면 잘라내기
+            display_header = header_key_value[:60] + "..." if len(header_key_value) > 60 else header_key_value
+            print(f"  {icon} {YELLOW}{display_header}:{RESET} {WHITE}{count}회{RESET}")
+        
+        if len(stats_data['least_common']) > 0:
+            print(f"\n{BOLD}{RED}❄️  가장 적게 사용된 헤더=값:{RESET}")
+            for header_key_value, count in stats_data['least_common']:
+                display_header = header_key_value[:60] + "..." if len(header_key_value) > 60 else header_key_value
+                print(f"  🔹 {YELLOW}{display_header}:{RESET} {WHITE}{count}회{RESET}")
+        
+        print(f"{PURPLE}{'─' * 60}{RESET}")
+    
+    def format_headers_output(self, headers: List[Dict], timestamp: int, 
+                            client_ip: str = None, method: str = None, uri: str = None) -> str:
+        """
+        헤더 정보를 보기 좋게 포맷
+        
+        Args:
+            headers: 헤더 리스트
+            timestamp: 타임스탬프
+            client_ip: 클라이언트 IP
+            method: HTTP 메소드
+            uri: URI
+            
+        Returns:
+            포맷된 출력 문자열
+        """
+        dt = datetime.fromtimestamp(timestamp / 1000)
+        
+        # 색상 코드
+        BLUE = '\033[94m'
+        GREEN = '\033[92m'
+        YELLOW = '\033[93m'
+        RED = '\033[91m'
+        PURPLE = '\033[95m'
+        CYAN = '\033[96m'
+        WHITE = '\033[97m'
+        BOLD = '\033[1m'
+        RESET = '\033[0m'
+        
+        # 메소드별 색상
+        method_color = {
+            'GET': GREEN,
+            'POST': BLUE,
+            'PUT': YELLOW,
+            'DELETE': RED,
+            'PATCH': PURPLE
+        }.get(method, WHITE)
+        
+        output = [
+            f"\n{CYAN}{'═' * 80}{RESET}",
+            f"{BOLD}{WHITE}🕒 시간:{RESET} {BLUE}{dt.strftime('%Y-%m-%d %H:%M:%S')}{RESET}",
+            f"{BOLD}{WHITE}🌐 클라이언트 IP:{RESET} {GREEN}{client_ip or 'N/A'}{RESET}",
+            f"{BOLD}{WHITE}📨 메소드:{RESET} {method_color}{BOLD}{method or 'N/A'}{RESET}",
+            f"{BOLD}{WHITE}🔗 URI:{RESET} {CYAN}{uri or 'N/A'}{RESET}",
+            f"{BOLD}{WHITE}📋 헤더:{RESET}",
+        ]
+        
+        if headers:
+            for i, header in enumerate(headers, 1):
+                name = header.get('name', 'unknown')
+                value = header.get('value', '')
+                
+                # 헤더명별 아이콘
+                icon = {
+                    'host': '🏠',
+                    'user-agent': '🤖',
+                    'content-type': '📄',
+                    'authorization': '🔐',
+                    'referer': '🔙',
+                    'accept': '✅',
+                    'cookie': '🍪',
+                    'x-forwarded-for': '🔀'
+                }.get(name.lower(), '🔸')
+                
+                # 값이 너무 길면 잘라내기
+                display_value = value[:100] + "..." if len(value) > 100 else value
+                
+                output.append(f"   {icon} {YELLOW}{name}:{RESET} {WHITE}{display_value}{RESET}")
+        else:
+            output.append(f"   {RED}📭 (헤더 없음){RESET}")
+            
+        output.append(f"{CYAN}{'─' * 80}{RESET}")
+        return "\n".join(output)
+    
+    def monitor_headers(self, poll_interval: int = 1):
+        """
+        헤더 정보를 실시간으로 모니터링
+        
+        Args:
+            poll_interval: 폴링 간격 (초)
+        """
+        # 색상 코드
+        BLUE = '\033[94m'
+        GREEN = '\033[92m'
+        YELLOW = '\033[93m'
+        BOLD = '\033[1m'
+        RESET = '\033[0m'
+        
+        print(f"\n{BOLD}{BLUE}🚀 WAF 로그 헤더 모니터링 + 통계 분석 시작...{RESET}")
+        print(f"{YELLOW}📁 로그 그룹:{RESET} {self.log_group}")
+        print(f"{YELLOW}📊 로그 스트림:{RESET} {self.log_stream}")
+        print(f"{YELLOW}⏱️  폴링 간격:{RESET} {poll_interval}초")
+        print(f"{YELLOW}📈 통계 저장:{RESET} waf_header_stats/ 디렉토리")
+        print(f"{GREEN}{'═' * 80}{RESET}")
+        print(f"{BOLD}📡 실시간 모니터링 중... (Ctrl+C로 종료){RESET}")
+        
+        # 통계 디렉토리 미리 생성
+        stats_dir = "waf_header_stats"
+        if not os.path.exists(stats_dir):
+            os.makedirs(stats_dir)
+            print(f"{GREEN}📁 통계 디렉토리 생성: {stats_dir}{RESET}")
+        
+        # 현재 시간에서 5분 전부터 모니터링 시작
+        start_time = int((datetime.now() - timedelta(minutes=5)).timestamp() * 1000)
+        last_stats_save = time.time()
+        
+        while True:
+            try:
+                # 새로운 로그 이벤트 가져오기
+                events = self.get_log_events(start_time)
+                print(f"🔍 로그 이벤트 {len(events)}개 조회됨")
+                
+                processed_count = 0
+                for event in events:
+                    event_timestamp = event.get('timestamp')
+                    
+                    # 이미 처리한 로그는 스킵
+                    if self.last_timestamp and event_timestamp <= self.last_timestamp:
+                        continue
+                    
+                    processed_count += 1
+                    log_message = event.get('message', '')
+                    waf_log = self.parse_waf_log(log_message)
+                    
+                    if waf_log:
+                        # 헤더 추출
+                        headers = self.extract_headers(waf_log)
+                        
+                        # 통계 업데이트
+                        self.update_header_stats(headers, event_timestamp)
+                        
+                        # 추가 정보 추출
+                        http_request = waf_log.get('httpRequest', {})
+                        client_ip = http_request.get('clientIp')
+                        method = http_request.get('httpMethod')
+                        uri = http_request.get('uri')
+                        
+                        # 헤더 출력
+                        formatted_output = self.format_headers_output(
+                            headers, event_timestamp, client_ip, method, uri
+                        )
+                        print(formatted_output)
+                        
+                        # 마지막 처리 타임스탬프 업데이트
+                        self.last_timestamp = event_timestamp
+                
+                # 다음 폴링을 위한 시작 시간 업데이트
+                if events:
+                    new_start_time = max(event.get('timestamp', 0) for event in events) + 1
+                    if new_start_time != start_time:
+                        start_time = new_start_time
+                
+                # 30초마다 강제로 통계 저장 (로그가 없어도)
+                current_time = time.time()
+                if current_time - last_stats_save >= 30:
+                    with self.stats_lock:
+                        if self.current_minute_headers and self.last_minute:
+                            print(f"⏰ 30초 경과 - 강제 통계 저장: {self.last_minute}")
+                            self.save_minute_stats(self.last_minute, dict(self.current_minute_headers))
+                            last_stats_save = current_time
+                        else:
+                            print(f"⏰ 30초 경과 - 저장할 통계 없음")
+                
+                # 폴링 간격만큼 대기
+                time.sleep(poll_interval)
+                
+            except KeyboardInterrupt:
+                print(f"\n{BOLD}{YELLOW}👋 모니터링을 종료합니다.{RESET}")
+                # 마지막 분의 통계가 있다면 저장
+                with self.stats_lock:
+                    if self.current_minute_headers and self.last_minute:
+                        self.save_minute_stats(self.last_minute, dict(self.current_minute_headers))
+                break
+            except Exception as e:
+                print(f"\n{BOLD}❌ 모니터링 중 오류 발생: {e}{RESET}")
+                time.sleep(poll_interval)
 
+def main():
+    """메인 함수"""
     try:
-        r = subprocess.run(["aws", "elbv2", "describe-target-groups", "--query",
-                           "TargetGroups[*].[TargetGroupName,TargetGroupArn]", "--output", "json", "--region", REGION],
-                          capture_output=True, text=True, timeout=5)
-        for name, arn in json.loads(r.stdout):
-            suffix = "targetgroup/" + arn.split(":targetgroup/")[1] if ":targetgroup/" in arn else ""
-            if "user" in name:
-                config["user_tg"] = suffix
-            elif "product" in name:
-                config["product_tg"] = suffix
-            elif "stress" in name:
-                config["stress_tg"] = suffix
-        print(f"  TGs detected: {sum(1 for k in ['user_tg','product_tg','stress_tg'] if config[k])}/3")
-    except:
-        pass
-
-    rds = input(f"  RDS ID [{config['rds_id']}]: ").strip()
-    if rds:
-        config["rds_id"] = rds
-    print("\n  Starting...\n")
-    time.sleep(1)
-
+        # WAF 헤더 모니터링 시작
+        monitor = WAFHeaderMonitor()
+        monitor.monitor_headers(poll_interval=1)  # 1초마다 체크
+        
+    except Exception as e:
+        print(f"스크립트 실행 실패: {e}")
 
 if __name__ == "__main__":
-    prompt_config()
-    threading.Thread(target=fetch_loop, daemon=True).start()
-    curses.wrapper(draw)
+    main()

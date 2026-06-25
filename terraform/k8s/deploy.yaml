@@ -37,7 +37,7 @@ spec:
           lifecycle:
             preStop:
               exec:
-                command: ["/bin/sh", "-c", "sleep 3"]
+                command: ["/bin/sh", "-c", "sleep 5"]
           startupProbe:
             httpGet:
               path: /healthcheck
@@ -96,7 +96,7 @@ spec:
           lifecycle:
             preStop:
               exec:
-                command: ["/bin/sh", "-c", "sleep 3"]
+                command: ["/bin/sh", "-c", "sleep 5"]
           startupProbe:
             httpGet:
               path: /healthcheck
@@ -155,7 +155,7 @@ spec:
           lifecycle:
             preStop:
               exec:
-                command: ["/bin/sh", "-c", "sleep 3"]
+                command: ["/bin/sh", "-c", "sleep 5"]
           startupProbe:
             httpGet:
               path: /healthcheck

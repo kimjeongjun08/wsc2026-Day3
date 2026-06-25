@@ -40,6 +40,7 @@ resource "aws_lb_target_group" "user" {
   protocol    = "HTTP"
   vpc_id      = aws_vpc.this.id
   target_type = "ip"
+  deregistration_delay = 30
 
   health_check {
     path                = "/healthcheck"
@@ -59,6 +60,7 @@ resource "aws_lb_target_group" "product" {
   protocol    = "HTTP"
   vpc_id      = aws_vpc.this.id
   target_type = "ip"
+  deregistration_delay = 30
 
   health_check {
     path                = "/healthcheck"
@@ -78,6 +80,7 @@ resource "aws_lb_target_group" "stress" {
   protocol    = "HTTP"
   vpc_id      = aws_vpc.this.id
   target_type = "ip"
+  deregistration_delay = 30
 
   health_check {
     path                = "/healthcheck"

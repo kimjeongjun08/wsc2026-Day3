@@ -481,6 +481,30 @@ def api_mng_desired():
         return jsonify({"ok": False, "msg": str(e)})
 
 
+@app.route("/api/node/drain/<path:node_name>", methods=["POST"])
+def api_node_drain(node_name):
+    """노드 cordon + drain + nodeclaim 삭제 → 강제 종료"""
+    r1 = subprocess.run(["kubectl", "cordon", node_name], capture_output=True, text=True, timeout=10)
+    r2 = subprocess.run(["kubectl", "drain", node_name,
+                         "--ignore-daemonsets", "--delete-emptydir-data",
+                         "--force", "--grace-period=30", "--timeout=60s"],
+                        capture_output=True, text=True, timeout=70)
+    # NodeClaim 찾아서 삭제 → Karpenter가 노드 즉시 종료
+    r3 = subprocess.run(["kubectl", "get", "nodeclaims", "-o",
+                         "custom-columns=NAME:.metadata.name,NODE:.status.nodeName", "--no-headers"],
+                        capture_output=True, text=True, timeout=5)
+    nc_deleted = False
+    if r3.returncode == 0:
+        for line in r3.stdout.strip().splitlines():
+            parts = line.split()
+            if len(parts) == 2 and parts[1] == node_name:
+                subprocess.run(["kubectl", "delete", "nodeclaim", parts[0]], capture_output=True, text=True, timeout=10)
+                nc_deleted = True
+    ok = r1.returncode == 0 and r2.returncode == 0
+    msg = f"cordon: {'✓' if r1.returncode==0 else '✗'} | drain: {'✓' if r2.returncode==0 else '✗'} | nodeclaim: {'✓ 삭제' if nc_deleted else '- (MNG)'}"
+    return jsonify({"ok": ok, "msg": msg})
+
+
 def auto_detect():
     try:
         r = subprocess.run(["aws", "elbv2", "describe-load-balancers", "--query", "LoadBalancers[0].LoadBalancerArn",

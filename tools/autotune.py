@@ -134,7 +134,7 @@ def calculate(node_type, max_nodes, measured=None):
         s_req = 50  # 기본값도 작게
 
     s_lim_target = int(measured["stress"] * 2) if measured else (cpu * 70 // 100)
-    s_lim = min(s_lim_target, cpu * 70 // 100)
+    s_lim = max(200, min(s_lim_target, cpu * 70 // 100))  # 최소 200m
 
     # --- HPA maxReplicas: request 기반 역산 ---
     # 최대 노드 전체 available CPU를 request로 나눔 → 이론적 최대 pod 수
@@ -213,10 +213,10 @@ def apply_all(config, node_type):
     s = c["stress"]
     patch = json.dumps({"spec": {"template": {"spec": {"containers": [{"name": "stress", "resources": {
         "requests": {"cpu": s["req"], "memory": "128Mi"},
-        "limits": {"cpu": s["lim"], "memory": "512Mi"}
+        "limits": {"memory": "512Mi"}
     }}]}}}}).replace('"', '\\"')
     kubectl(f'-n {NAMESPACE} patch deploy/stress --type=strategic -p "{patch}"')
-    hpa = json.dumps({"spec": {"minReplicas": 1, "maxReplicas": s["max"],
+    hpa = json.dumps({"spec": {"minReplicas": s.get("min", 1), "maxReplicas": s["max"],
         "behavior": {
             "scaleUp": {"stabilizationWindowSeconds": 0, "policies": [{"type": "Pods", "value": s["scaleup"], "periodSeconds": 15}], "selectPolicy": "Max"},
             "scaleDown": {"stabilizationWindowSeconds": 60, "policies": [{"type": "Percent", "value": 50, "periodSeconds": 15}], "selectPolicy": "Max"}
@@ -237,15 +237,18 @@ def uid():
     return str(uuid.uuid4())
 
 
-async def verify(base):
+async def verify(base, seed_base=None):
     """실제 HPA 트리거될 정도의 부하로 검증 (concurrency 높게)"""
+    # seed_base: seed POST는 ALB 직접 (WAF 우회), 부하는 base(CF)로
+    if seed_base is None:
+        seed_base = base
     results = {"user": [], "product": [], "stress": []}
     seed_u = f"_t_{random.randint(1000000,9999999)}"
     seed_p = f"_t_{random.randint(1000000,9999999)}"
 
     async with aiohttp.ClientSession() as s:
-        await s.post(f"{base}/v1/user", json={"requestid": rid(), "uuid": uid(), "username": seed_u, "email": f"{seed_u}@t.org"})
-        await s.post(f"{base}/v1/product", json={"requestid": rid(), "uuid": uid(), "id": seed_p, "name": seed_p, "price": 1})
+        await s.post(f"{seed_base}/v1/user", json={"requestid": rid(), "uuid": uid(), "username": seed_u, "email": f"{seed_u}@t.org"})
+        await s.post(f"{seed_base}/v1/product", json={"requestid": rid(), "uuid": uid(), "id": seed_p, "name": seed_p, "price": 1})
 
     # 45초, concurrency 15 (HPA 트리거 충분)
     duration = 45
@@ -327,7 +330,7 @@ def print_results(results):
 
 async def main():
     if len(sys.argv) < 2:
-        print("사용법: python autotune.py <endpoint>")
+        print("사용법: python autotune.py <CF endpoint>")
         sys.exit(1)
 
     base = sys.argv[1].rstrip("/")
@@ -339,9 +342,11 @@ async def main():
     if node_type not in NODE_CPU:
         print(f"지원 타입: {list(NODE_CPU.keys())}"); return
 
-    # 워밍업 부하 → 실측 CPU (부하 상태에서 측정)
+    warmup_base = base
+
+    # 워밍업 부하 → 실측 CPU (ALB 직접 호출로 WAF 우회)
     print(f"\n{WARMUP_DURATION}초 워밍업 부하 + 실측 CPU...")
-    measured = await warmup_and_measure(base)
+    measured = await warmup_and_measure(warmup_base)
 
     config = calculate(node_type, max_nodes, measured)
 
@@ -367,7 +372,7 @@ async def main():
 
     # 검증 (stress에 부하 집중)
     print("45초 검증 (stress 부하 집중)...")
-    results = await verify(base)
+    results = await verify(warmup_base, warmup_base)
     passed = print_results(results)
 
     if passed:
@@ -380,33 +385,40 @@ async def main():
             print(f"  재튜닝 시도 {attempt}/3")
             print(f"{'='*55}")
 
-            # 재튜닝: util 낮추고 maxReplicas safety factor 올리기
             retry_config = calculate(node_type, max_nodes, measured)
 
             # util을 10%씩 낮춤 (더 일찍 스케일)
             for app in ["user", "product", "stress"]:
                 retry_config[app]["util"] = max(30, retry_config[app]["util"] - attempt * 10)
 
-            # safety factor 올려서 maxReplicas 더 크게
+            # maxReplicas safety factor 올리기
             cpu = NODE_CPU.get(node_type, 1800)
             available = cpu - 350
             total = available * max_nodes
-            sf = 0.7 + attempt * 0.1  # 0.8 → 0.9 → 1.0
-            for app, req_key in [("user", "u_req"), ("product", "p_req"), ("stress", "s_req")]:
+            sf = 0.7 + attempt * 0.1
+            for app in ["user", "product", "stress"]:
                 req_m = int(retry_config[app]["req"].replace("m", ""))
                 retry_config[app]["max"] = max(retry_config[app]["max"], int(total * sf // req_m))
 
+            # stress minReplicas 올려서 스파이크 초입 대응
+            retry_config["stress"]["min"] = min(attempt + 1, 4)
+
             print(f"  [user]    req={retry_config['user']['req']} max={retry_config['user']['max']} util={retry_config['user']['util']}%")
             print(f"  [product] req={retry_config['product']['req']} max={retry_config['product']['max']} util={retry_config['product']['util']}%")
-            print(f"  [stress]  req={retry_config['stress']['req']} max={retry_config['stress']['max']} util={retry_config['stress']['util']}%")
+            print(f"  [stress]  req={retry_config['stress']['req']} max={retry_config['stress']['max']} util={retry_config['stress']['util']}% min={retry_config['stress'].get('min',1)}")
 
             print("\n재적용 중...")
             apply_all(retry_config, node_type)
-            print("완료. 30초 안정화...")
-            await asyncio.sleep(30)
+            print("완료. 60초 안정화 (HPA 반응 대기)...")
+            await asyncio.sleep(60)
+
+            # HPA가 실제로 반응했는지 확인 후 검증
+            _, hpa_out = kubectl(f"-n {NAMESPACE} get hpa --no-headers")
+            if hpa_out:
+                print(f"  HPA 상태: {hpa_out.replace(chr(10), ' | ')}")
 
             print(f"45초 검증 (재시도 {attempt})...")
-            results = await verify(base)
+            results = await verify(warmup_base, warmup_base)
             passed = print_results(results)
 
             if passed:

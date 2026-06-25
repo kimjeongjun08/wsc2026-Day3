@@ -205,7 +205,7 @@ def draw(stdscr, buffers, stats, lock):
         height, width = stdscr.getmaxyx()
         stdscr.erase()
 
-        tabs = ["[1]Dashboard", "[2]Logs", "[3]Raw", "[4]Pods"]
+        tabs = ["[1]Dashboard", "[2]Logs", "[3]WAF", "[4]Pods"]
         tabs[mode] = f">{tabs[mode]}"
         hint = " ←→:focus ↑↓:scroll Space:pause" if mode in (1, 2) else ""
         safe_addstr(stdscr, 0, 1, f" Pod Monitor | {'  '.join(tabs)} | q=quit{hint} "[:width-1], curses.A_BOLD)
@@ -406,29 +406,101 @@ def draw_logs(stdscr, buffers, lock, height, width, C, focus=-1, scroll=0, pause
 
 
 def draw_raw(stdscr, buffers, lock, height, width, C, focus=-1, scroll=0, paused=False):
-    apps = [APPS[focus]] if focus >= 0 else APPS
-    panel_w = width // len(apps)
-    for i, app in enumerate(apps):
-        x = i * panel_w
-        label = f" {app.upper()} [RAW] "
-        if paused:
-            label += "[PAUSED] "
-        safe_addstr(stdscr, 1, x + (panel_w - len(label)) // 2, label, curses.color_pair(C[app]) | curses.A_BOLD)
-        with lock:
-            lines = list(buffers.get(f"{app}_raw", []))
-        avail = height - 3
-        end = len(lines) - scroll
-        start = max(0, end - avail)
-        end = max(start, end)
-        visible = lines[start:end]
-        for j, line in enumerate(visible):
-            safe_addstr(stdscr, j + 2, x, line[:panel_w - 2])
-        if i < len(apps) - 1:
-            for y in range(1, height):
-                safe_addstr(stdscr, y, (i + 1) * panel_w - 1, "|")
-        if i < len(APPS) - 1:
-            for y in range(1, height):
-                safe_addstr(stdscr, y, (i + 1) * panel_w - 1, "|")
+    """Tab 3: CloudFront WAF 로그 (Logs Insights, 헤더 상세)"""
+    global _waf_cache
+    if "_waf_cache" not in globals():
+        _waf_cache = {"requests": [], "ts": 0}
+
+    now = time.time()
+    if now - _waf_cache["ts"] > 10 and not paused:
+        _waf_cache["ts"] = now
+        def _fetch():
+            try:
+                import json as _json, subprocess as _sp
+                start_ms = int((time.time() - 300) * 1000)  # 최근 5분
+                # log stream 최신 이벤트 직접 조회
+                ls_r = _sp.run(
+                    ["aws", "logs", "describe-log-streams",
+                     "--log-group-name", "aws-waf-logs-apdev",
+                     "--order-by", "LastEventTime", "--descending",
+                     "--limit", "1", "--region", "us-east-1",
+                     "--query", "logStreams[0].logStreamName", "--output", "text"],
+                    capture_output=True, text=True, timeout=5)
+                stream = ls_r.stdout.strip()
+                if not stream or stream == "None":
+                    return
+                r = _sp.run(
+                    ["aws", "logs", "get-log-events",
+                     "--log-group-name", "aws-waf-logs-apdev",
+                     "--log-stream-name", stream,
+                     "--start-time", str(start_ms),
+                     "--limit", "80",
+                     "--region", "us-east-1", "--output", "json"],
+                    capture_output=True, text=True, timeout=10)
+                d = _json.loads(r.stdout)
+                reqs = []
+                for evt in d.get("events", []):
+                    try:
+                        log = _json.loads(evt["message"])
+                        req = log.get("httpRequest", {})
+                        reqs.append({
+                            "action": log.get("action", "?"),
+                            "ts": evt.get("timestamp", 0),
+                            "method": req.get("httpMethod", "?"),
+                            "uri": req.get("uri", "?"),
+                            "ip": req.get("clientIp", "?"),
+                            "country": req.get("country", "?"),
+                            "headers": req.get("headers", []),
+                            "rule": log.get("terminatingRuleId", "-"),
+                        })
+                    except Exception:
+                        pass
+                reqs.sort(key=lambda x: x["ts"], reverse=True)
+                _waf_cache["requests"] = reqs
+            except Exception:
+                pass
+        import threading as _th
+        _th.Thread(target=_fetch, daemon=True).start()
+
+    reqs = _waf_cache["requests"]
+    total = len(reqs)
+    blocked = sum(1 for r in reqs if r["action"] == "BLOCK")
+    allowed = total - blocked
+
+    safe_addstr(stdscr, 1, 2,
+        f" WAF 로그  총:{total} BLOCK:{blocked} ALLOW:{allowed}  "
+        f"{'[PAUSED]' if paused else '갱신:10s'}  ↑↓:스크롤 ",
+        curses.A_BOLD)
+    safe_addstr(stdscr, 2, 2, "─" * min(width - 4, 130))
+
+    y = 3
+    start_idx = scroll
+    for i in range(start_idx, len(reqs)):
+        if y >= height - 1:
+            break
+        r = reqs[i]
+        dt_str = datetime.fromtimestamp(r["ts"] / 1000).strftime("%H:%M:%S") if r["ts"] else "?"
+        action_color = curses.color_pair(4) if r["action"] == "BLOCK" else curses.color_pair(5)
+
+        line1 = f" {r['action']:<6} {dt_str} {r['method']:<6} {r['uri'][:55]:<55} {r['ip']:<16} {r['rule'][:20]}"
+        safe_addstr(stdscr, y, 1, line1[:width-2], action_color)
+        y += 1
+        if y >= height - 1:
+            break
+
+        hdrs = {h.get("name","").lower(): h.get("value","") for h in r.get("headers", [])}
+        hdr_parts = []
+        for k in ["user-agent", "content-type", "authorization", "x-hacker", "x-attack", "x-forwarded-for"]:
+            if k in hdrs:
+                hdr_parts.append(f"{k}={hdrs[k][:30]}")
+        if not hdr_parts:
+            hdr_parts = [f"{h.get('name','')}={h.get('value','')[:20]}" for h in r.get("headers", [])[:4]]
+        hdr_line = "   └ " + " | ".join(hdr_parts)
+        if any(bad in hdr_line.lower() for bad in ["x-hacker", "x-attack", "authorization", "x-forwarded"]):
+            safe_addstr(stdscr, y, 1, hdr_line[:width-2], curses.color_pair(2))
+        else:
+            safe_addstr(stdscr, y, 1, hdr_line[:width-2])
+        y += 1
 
 
 def draw_pods(stdscr, height, width, C):
