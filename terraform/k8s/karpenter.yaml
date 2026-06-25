@@ -24,11 +24,11 @@ spec:
           values: ["${node_instance_type}"]
       expireAfter: 720h
   limits:
-    cpu: "6"
-    memory: 12Gi
+    cpu: "12"
+    memory: 24Gi
   disruption:
     consolidationPolicy: WhenEmptyOrUnderutilized
-    consolidateAfter: 60s
+    consolidateAfter: 20s
 ---
 apiVersion: karpenter.k8s.aws/v1
 kind: EC2NodeClass

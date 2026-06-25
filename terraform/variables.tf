@@ -5,7 +5,7 @@ variable "region" {
 
 variable "project" {
   type    = string
-  default = "wsi2026"
+  default = "apdev"
 }
 
 variable "vpc_cidr" {
@@ -20,7 +20,7 @@ variable "azs" {
 
 variable "eks_version" {
   type    = string
-  default = "1.33"
+  default = "1.36"
 }
 
 variable "node_instance_type" {
@@ -30,7 +30,7 @@ variable "node_instance_type" {
 
 variable "node_desired_size" {
   type    = number
-  default = 2
+  default = 1
 }
 
 variable "node_max_size" {
@@ -40,7 +40,7 @@ variable "node_max_size" {
 
 variable "node_min_size" {
   type    = number
-  default = 2
+  default = 1
 }
 
 variable "db_name" {
@@ -51,6 +51,11 @@ variable "db_name" {
 variable "db_instance_class" {
   type        = string
   description = "RDS 인스턴스 클래스 (기본값: db.t3.micro)"
+}
+
+variable "db_allocated_storage" {
+  type        = number
+  description = "RDS 스토리지 GB (연습: 200, 대회: 500+면 IOPS/처리량 조작 가능, 최대: 65536)"
 }
 
 variable "app_image_tag" {

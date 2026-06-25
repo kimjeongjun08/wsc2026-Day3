@@ -82,7 +82,9 @@ resource "aws_db_proxy_default_target_group" "this" {
   db_proxy_name = aws_db_proxy.this.name
 
   connection_pool_config {
-    max_connections_percent = 100
+    max_connections_percent      = 90
+    max_idle_connections_percent = 30
+    connection_borrow_timeout    = 120
   }
 }
 

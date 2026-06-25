@@ -1,24 +1,25 @@
 import subprocess, json, sys, time, threading, gzip, shlex
 from datetime import datetime, timedelta
 from collections import deque
-from flask import Flask, jsonify, render_template
+from flask import Flask, jsonify, render_template, request
 
 app = Flask(__name__)
 REGION = "ap-northeast-2"
+WAF_REGION = "us-east-1"          # CloudFront WAF는 us-east-1
 NS = "apdev"
 WAF_LOG_GROUP = "aws-waf-logs-apdev"
-ALB_LOG_BUCKET = "wsi2026-images-053c6633"
-config = {"lb_arn": "", "user_tg": "", "product_tg": "", "stress_tg": "", "rds_id": "apdev-rds-instance", "webacl": "wsi2026-acl", "account": ""}
+ALB_LOG_BUCKET = ""  # auto_detect()에서 채워짐 (terraform output alb_logs_bucket)
+config = {"lb_arn": "", "user_tg": "", "product_tg": "", "stress_tg": "", "rds_id": "apdev-rds-instance", "webacl": "apdev-cf-acl", "account": ""}
 history = deque(maxlen=480)
 
 
-def cw_get(ns, metric, dims, stat="Average", period=60):
+def cw_get(ns, metric, dims, stat="Average", period=60, region=None):
     end = datetime.utcnow()
     start = end - timedelta(minutes=5)
     dim_args = ["--dimensions"] + [f"Name={k},Value={v}" for k, v in dims.items()]
     cmd = ["aws", "cloudwatch", "get-metric-statistics", "--namespace", ns, "--metric-name", metric,
            "--start-time", start.strftime("%Y-%m-%dT%H:%M:%S"), "--end-time", end.strftime("%Y-%m-%dT%H:%M:%S"),
-           "--period", str(period), "--statistics", stat, "--region", REGION] + dim_args
+           "--period", str(period), "--statistics", stat, "--region", region or REGION] + dim_args
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
         pts = sorted(json.loads(r.stdout).get("Datapoints", []), key=lambda x: x["Timestamp"])
@@ -57,10 +58,11 @@ def fetch_loop():
                 m[f"{name}_4xx"] = cw_get("AWS/ApplicationELB", "HTTPCode_Target_4XX_Count", tgd, "Sum")
         wacl = config["webacl"]
         if wacl:
-            wd = {"WebACL": wacl, "Region": REGION, "Rule": "ALL"}
-            m["waf_allowed"] = cw_get("AWS/WAFV2", "AllowedRequests", wd, "Sum")
-            m["waf_blocked"] = cw_get("AWS/WAFV2", "BlockedRequests", wd, "Sum")
-            m["waf_counted"] = cw_get("AWS/WAFV2", "CountedRequests", wd, "Sum")
+            # CloudFront WAF: dimension은 WebACL + Rule만 (Region dimension 없음)
+            wd = {"WebACL": wacl, "Rule": "ALL"}
+            m["waf_allowed"] = cw_get("AWS/WAFV2", "AllowedRequests", wd, "Sum", region=WAF_REGION)
+            m["waf_blocked"] = cw_get("AWS/WAFV2", "BlockedRequests", wd, "Sum", region=WAF_REGION)
+            m["waf_counted"] = cw_get("AWS/WAFV2", "CountedRequests", wd, "Sum", region=WAF_REGION)
         m["node_count"] = node_count()
         history.append(m)
         time.sleep(15)
@@ -243,7 +245,7 @@ def logs_insights(query, minutes=30, wait_s=8):
     try:
         q = subprocess.run(["aws", "logs", "start-query", "--log-group-name", WAF_LOG_GROUP,
                             "--start-time", str(start), "--end-time", str(end),
-                            "--query-string", query, "--region", REGION,
+                            "--query-string", query, "--region", WAF_REGION,
                             "--query", "queryId", "--output", "text"],
                            capture_output=True, text=True, timeout=10)
         qid = q.stdout.strip()
@@ -252,7 +254,7 @@ def logs_insights(query, minutes=30, wait_s=8):
         while time.time() < deadline:
             time.sleep(1)
             r = subprocess.run(["aws", "logs", "get-query-results", "--query-id", qid,
-                                "--region", REGION, "--output", "json"],
+                                "--region", WAF_REGION, "--output", "json"],
                                capture_output=True, text=True, timeout=10)
             d = json.loads(r.stdout)
             if d.get("status") == "Complete":
@@ -265,10 +267,12 @@ def logs_insights(query, minutes=30, wait_s=8):
 def api_waf():
     wacl = config["webacl"]
     # per-rule blocked counts (last 5min window)
-    rules = ["BlockSQLInjection", "BlockXSS", "BlockScanner"]
+    # BlockUnknownHeaders는 update_waf.py 실행 후 생성됨 → 없으면 0
+    rules = ["BlockUnknownHeaders", "AllowValidGET", "AllowValidPOST", "AllowValidPUT"]
     per_rule = []
     for rl in rules:
-        c = cw_get("AWS/WAFV2", "BlockedRequests", {"WebACL": wacl, "Region": REGION, "Rule": rl}, "Sum")
+        c = cw_get("AWS/WAFV2", "BlockedRequests",
+                   {"WebACL": wacl, "Rule": rl}, "Sum", region=WAF_REGION)
         per_rule.append({"rule": rl, "blocked": round(c)})
     # top blocked client IPs / URIs / terminating rules (last 30min, from logs)
     top_ips = logs_insights(
@@ -280,11 +284,17 @@ def api_waf():
     top_rules = logs_insights(
         'filter action="BLOCK" | stats count(*) as cnt by terminatingRuleId '
         '| sort cnt desc | limit 10')
+    # 전체 요청 수 (ALLOW + BLOCK)
+    total_stats = logs_insights(
+        'stats count(*) as total, '
+        'sum(action="ALLOW") as allowed, '
+        'sum(action="BLOCK") as blocked by bin(1m) | sort @timestamp desc | limit 1', wait_s=10)
     return jsonify({
         "per_rule": per_rule,
         "top_ips": [{"ip": r.get("ip", "?"), "cnt": int(r.get("cnt", 0))} for r in top_ips],
         "top_uris": [{"uri": r.get("uri", "?"), "cnt": int(r.get("cnt", 0))} for r in top_uris],
         "top_rules": [{"rule": r.get("terminatingRuleId", "?"), "cnt": int(r.get("cnt", 0))} for r in top_rules],
+        "total_stats": total_stats[0] if total_stats else {},
     })
 
 def _account():
@@ -432,6 +442,45 @@ def api_autoscale(action):
     return jsonify({"ok": False, "msg": "unknown"})
 
 
+@app.route("/api/nodepool/limits", methods=["POST"])
+def api_nodepool_limits():
+    """Karpenter NodePool CPU/Memory limits 조정"""
+    data = request.get_json()
+    cpu = data.get("cpu")      # e.g. "8"
+    memory = data.get("memory")  # e.g. "16Gi"
+    if not cpu and not memory:
+        return jsonify({"ok": False, "msg": "cpu 또는 memory 필요"})
+    limits = {}
+    if cpu: limits["cpu"] = str(cpu)
+    if memory: limits["memory"] = str(memory)
+    patch = json.dumps({"spec": {"limits": limits}}).replace('"', '\\"')
+    r = subprocess.run(f'kubectl patch nodepool apdev-pool --type=merge -p "{patch}"',
+                       shell=True, capture_output=True, text=True, timeout=10)
+    return jsonify({"ok": r.returncode == 0, "msg": (r.stdout + r.stderr).strip()})
+
+
+@app.route("/api/mng/desired", methods=["POST"])
+def api_mng_desired():
+    """MNG desired/min/max 노드 수 조정"""
+    data = request.get_json()
+    desired = data.get("desired")
+    min_size = data.get("min")
+    max_size = data.get("max")
+    try:
+        r = subprocess.run(
+            ["aws", "eks", "update-nodegroup-config",
+             "--cluster-name", f"{NS}-cluster",
+             "--nodegroup-name", f"{NS}-ng",
+             "--scaling-config",
+             f"minSize={min_size or 1},maxSize={max_size or 4},desiredSize={desired or 1}",
+             "--region", REGION],
+            capture_output=True, text=True, timeout=15
+        )
+        return jsonify({"ok": r.returncode == 0, "msg": (r.stdout + r.stderr).strip()[:200]})
+    except Exception as e:
+        return jsonify({"ok": False, "msg": str(e)})
+
+
 def auto_detect():
     try:
         r = subprocess.run(["aws", "elbv2", "describe-load-balancers", "--query", "LoadBalancers[0].LoadBalancerArn",
@@ -448,12 +497,23 @@ def auto_detect():
             elif "stress" in name: config["stress_tg"] = suffix
     except: pass
     try:
-        r = subprocess.run(["aws", "wafv2", "list-web-acls", "--scope", "REGIONAL",
-                           "--query", "WebACLs[0].Name", "--output", "text", "--region", REGION],
+        r = subprocess.run(["aws", "wafv2", "list-web-acls", "--scope", "CLOUDFRONT",
+                           "--query", "WebACLs[0].Name", "--output", "text", "--region", WAF_REGION],
                           capture_output=True, text=True, timeout=5)
         n = r.stdout.strip()
         if n and n != "None": config["webacl"] = n
     except: pass
+    # ALB 로그 버킷 자동 감지
+    global ALB_LOG_BUCKET
+    if not ALB_LOG_BUCKET:
+        try:
+            r = subprocess.run(["aws", "s3api", "list-buckets", "--query",
+                               "Buckets[?contains(Name,'alb-logs')].Name | [0]",
+                               "--output", "text", "--region", REGION],
+                              capture_output=True, text=True, timeout=5)
+            b = r.stdout.strip()
+            if b and b != "None": ALB_LOG_BUCKET = b
+        except: pass
 
 
 if __name__ == "__main__":

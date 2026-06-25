@@ -126,6 +126,15 @@ input[type=number] { width:60px; padding:4px; background:#1a1a2e; border:1px sol
         <button class="btn btn-red" onclick="toggleKarpenter('off')">Karpenter OFF</button>
         <span class="mini" id="karp_status"></span>
       </div>
+      <div style="margin-top:16px;border-top:1px solid #333;padding-top:12px">
+        <p style="font-size:13px;margin-bottom:4px">Karpenter NodePool Limits</p>
+        <span class="mini" style="display:block;margin-bottom:6px">CPU limit = 노드 수 × 노드vCPU (t3.medium=2, t3.large=2, t3.xlarge=4)</span>
+        <span class="mini">CPU: </span><input type="number" id="np_cpu" value="8" min="1" max="64" style="width:60px;background:#1e1e1e;color:#eee;border:1px solid #444;padding:3px">
+        <span class="mini"> Memory(Gi): </span><input type="number" id="np_mem" value="16" min="1" max="256" style="width:60px;background:#1e1e1e;color:#eee;border:1px solid #444;padding:3px">
+        <button class="btn btn-blue" style="margin-left:6px" onclick="applyNodepoolLimits()">Apply</button>
+        <span class="mini" id="np_status"></span>
+      </div>
+
     </div>
   </div>
   <div class="grid" style="margin-top:12px">
@@ -398,6 +407,25 @@ async function toggleKarpenter(action) {
   document.getElementById('karp_status').textContent=j.msg;
   document.getElementById('karp_status').style.color=action==='on'?'#4caf50':'#f44336';
   toast(j.msg);
+}
+async function applyNodepoolLimits() {
+  const cpu=document.getElementById('np_cpu').value;
+  const mem=document.getElementById('np_mem').value+'Gi';
+  const r=await fetch('/api/nodepool/limits',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cpu,memory:mem})});
+  const j=await r.json();
+  document.getElementById('np_status').textContent=j.ok?`✓ cpu=${cpu} mem=${mem}`:'✗ '+j.msg;
+  document.getElementById('np_status').style.color=j.ok?'#4caf50':'#f44336';
+  toast(j.ok?`NodePool limits: cpu=${cpu} ${mem}`:'Error: '+j.msg);
+}
+async function applyMNG() {
+  const desired=parseInt(document.getElementById('mng_desired').value);
+  const min=parseInt(document.getElementById('mng_min').value);
+  const max=parseInt(document.getElementById('mng_max').value);
+  const r=await fetch('/api/mng/desired',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({desired,min,max})});
+  const j=await r.json();
+  document.getElementById('mng_status').textContent=j.ok?`✓ desired=${desired} min=${min} max=${max}`:'✗ '+j.msg;
+  document.getElementById('mng_status').style.color=j.ok?'#4caf50':'#f44336';
+  toast(j.ok?`MNG: desired=${desired}`:'Error: '+j.msg);
 }
 
 function kvTable(rows,kcol,vcol,keyf,empty){

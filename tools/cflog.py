@@ -16,7 +16,7 @@ sys.stderr.reconfigure(encoding='utf-8')
 os.environ["PYTHONIOENCODING"] = "utf-8"
 
 REGION = "ap-northeast-2"
-LOG_GROUP = "cflogs"
+LOG_GROUP = "aws-waf-logs-apdev"
 BOLD = "\033[1m"
 DIM = "\033[2m"
 RED = "\033[91m"

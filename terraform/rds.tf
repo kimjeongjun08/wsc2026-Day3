@@ -25,7 +25,7 @@ resource "aws_security_group" "rds" {
   }
 }
 
-# Custom parameter group: tuned for read-heavy product GETs and many short connections
+# Parameter group: charset/locale/slow query만, max_connections는 AWS 기본값 사용
 resource "aws_db_parameter_group" "mysql8" {
   name        = "${local.name}-mysql8"
   family      = "mysql8.0"
@@ -44,27 +44,24 @@ resource "aws_db_parameter_group" "mysql8" {
     value = "Asia/Seoul"
   }
   parameter {
-    name  = "max_connections"
-    value = "300"
-  }
-  parameter {
     name  = "slow_query_log"
     value = "1"
   }
   parameter {
     name  = "long_query_time"
-    value = "1"
+    value = "0.5"
   }
 }
 
 resource "aws_db_instance" "this" {
-  identifier        = "${local.name}-rds"
+  identifier        = "apdev-rds-instance"
   engine            = "mysql"
   engine_version    = "8.0"
-  instance_class    = var.db_instance_class
-  allocated_storage     = 20    # 연습용 최소값. 대회 당일: 65536 (최대 64TB for gp3)
-  max_allocated_storage = 30    # 연습용. 대회 당일: 65536
+  instance_class        = var.db_instance_class
+  allocated_storage     = var.db_allocated_storage
   storage_type          = "gp3"
+  iops                  = var.db_allocated_storage >= 400 ? 16000 : null
+  storage_throughput    = var.db_allocated_storage >= 400 ? 1000 : null
   multi_az          = true
 
   db_name  = var.db_name
@@ -89,7 +86,7 @@ resource "aws_db_instance" "this" {
   auto_minor_version_upgrade      = false
   deletion_protection             = false
 
-  tags = { Name = "${local.name}-rds" }
+  tags = { Name = "apdev-rds-instance" }
 }
 
 resource "aws_iam_role" "rds_monitoring" {

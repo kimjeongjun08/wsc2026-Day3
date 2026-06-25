@@ -26,64 +26,69 @@ resource "aws_lb" "this" {
   security_groups    = [aws_security_group.alb.id]
   subnets            = aws_subnet.public[*].id
 
+  access_logs {
+    bucket  = aws_s3_bucket.alb_logs.bucket
+    enabled = true
+  }
+
   tags = { Name = "${local.name}-alb" }
 }
 
 resource "aws_lb_target_group" "user" {
-  name        = "${local.name}-user-tg"
-  port        = 30001
+  name        = "${local.name}-user"
+  port        = 8080
   protocol    = "HTTP"
   vpc_id      = aws_vpc.this.id
-  target_type = "instance"
+  target_type = "ip"
 
   health_check {
     path                = "/healthcheck"
-    port                = "30001"
+    port                = "8080"
     healthy_threshold   = 2
-    unhealthy_threshold = 3
-    interval            = 15
-    timeout             = 5
+    unhealthy_threshold = 2
+    interval            = 10
+    timeout             = 3
   }
 
-  tags = { Name = "${local.name}-user-tg" }
+  tags = { Name = "${local.name}-user" }
 }
 
 resource "aws_lb_target_group" "product" {
-  name        = "${local.name}-product-tg"
-  port        = 30002
+  name        = "${local.name}-product"
+  port        = 8080
   protocol    = "HTTP"
   vpc_id      = aws_vpc.this.id
-  target_type = "instance"
+  target_type = "ip"
 
   health_check {
     path                = "/healthcheck"
-    port                = "30002"
+    port                = "8080"
     healthy_threshold   = 2
-    unhealthy_threshold = 3
-    interval            = 15
-    timeout             = 5
+    unhealthy_threshold = 2
+    interval            = 10
+    timeout             = 3
   }
 
-  tags = { Name = "${local.name}-product-tg" }
+  tags = { Name = "${local.name}-product" }
 }
 
 resource "aws_lb_target_group" "stress" {
-  name        = "${local.name}-stress-tg"
-  port        = 30003
+  name        = "${local.name}-stress"
+  port        = 8080
   protocol    = "HTTP"
   vpc_id      = aws_vpc.this.id
-  target_type = "instance"
+  target_type = "ip"
 
   health_check {
     path                = "/healthcheck"
-    port                = "30003"
+    port                = "8080"
     healthy_threshold   = 2
-    unhealthy_threshold = 3
-    interval            = 15
-    timeout             = 5
+    unhealthy_threshold = 2
+    interval            = 10
+    timeout             = 3
   }
 
-  tags = { Name = "${local.name}-stress-tg" }
+  tags = { Name = "${local.name}-stress" }
 }
 
 resource "aws_lb_listener" "http" {

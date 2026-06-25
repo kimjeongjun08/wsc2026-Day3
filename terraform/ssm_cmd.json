@@ -1,7 +1,0 @@
-{
-  "commands": [
-    "mysql -h apdev-rds-proxy.proxy-cdnblsxzzpgz.ap-northeast-2.rds.amazonaws.com -u admin -p'Skill53##' dev -e 'SELECT 1' 2>&1",
-    "echo '---DIRECT RDS---'",
-    "mysql -h apdev-rds-instance.cdnblsxzzpgz.ap-northeast-2.rds.amazonaws.com -u admin -p'Skill53##' dev -e 'SELECT 1' 2>&1"
-  ]
-}

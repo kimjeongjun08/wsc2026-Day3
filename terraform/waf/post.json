@@ -1,57 +1,15 @@
 {
-  "Name": "CompleteValidationRule",
+  "Name": "AllowValidPOST",
   "Priority": 2,
   "Statement": {
     "AndStatement": {
       "Statements": [
         {
           "ByteMatchStatement": {
-            "SearchString": "curl/8.7.1",
-            "FieldToMatch": {
-              "SingleHeader": {
-                "Name": "user-agent"
-              }
-            },
-            "TextTransformations": [
-              {
-                "Priority": 0,
-                "Type": "NONE"
-              }
-            ],
-            "PositionalConstraint": "EXACTLY"
-          }
-        },
-        {
-          "NotStatement": {
-            "Statement": {
-              "RegexMatchStatement": {
-                "RegexString": "^.*",
-                "FieldToMatch": {
-                  "Headers": {
-                    "MatchPattern": {
-                      "ExcludedHeaders": [
-                        "user-agent",
-                        "content-type",
-                        "host",
-                        "Content-Length",
-                        "Accept",
-                        "baggage",
-                        "x-vercel-id",
-                        "Connection"
-                      ]
-                    },
-                    "MatchScope": "ALL",
-                    "OversizeHandling": "CONTINUE"
-                  }
-                },
-                "TextTransformations": [
-                  {
-                    "Priority": 0,
-                    "Type": "NONE"
-                  }
-                ]
-              }
-            }
+            "SearchString": "POST",
+            "FieldToMatch": { "Method": {} },
+            "PositionalConstraint": "EXACTLY",
+            "TextTransformations": [{ "Priority": 0, "Type": "NONE" }]
           }
         },
         {
@@ -62,32 +20,10 @@
                   "Statements": [
                     {
                       "ByteMatchStatement": {
-                        "SearchString": "POST",
-                        "FieldToMatch": {
-                          "Method": {}
-                        },
-                        "TextTransformations": [
-                          {
-                            "Priority": 0,
-                            "Type": "NONE"
-                          }
-                        ],
-                        "PositionalConstraint": "EXACTLY"
-                      }
-                    },
-                    {
-                      "ByteMatchStatement": {
                         "SearchString": "/v1/user",
-                        "FieldToMatch": {
-                          "UriPath": {}
-                        },
-                        "TextTransformations": [
-                          {
-                            "Priority": 0,
-                            "Type": "NONE"
-                          }
-                        ],
-                        "PositionalConstraint": "EXACTLY"
+                        "FieldToMatch": { "UriPath": {} },
+                        "PositionalConstraint": "EXACTLY",
+                        "TextTransformations": [{ "Priority": 0, "Type": "NONE" }]
                       }
                     },
                     {
@@ -95,22 +31,13 @@
                         "RegexString": "^[0-9]+$",
                         "FieldToMatch": {
                           "JsonBody": {
-                            "MatchPattern": {
-                              "IncludedPaths": [
-                                "/requestid"
-                              ]
-                            },
+                            "MatchPattern": { "IncludedPaths": ["/requestid"] },
                             "MatchScope": "ALL",
-                            "InvalidFallbackBehavior": "MATCH",
+                            "InvalidFallbackBehavior": "NO_MATCH",
                             "OversizeHandling": "CONTINUE"
                           }
                         },
-                        "TextTransformations": [
-                          {
-                            "Priority": 0,
-                            "Type": "NONE"
-                          }
-                        ]
+                        "TextTransformations": [{ "Priority": 0, "Type": "NONE" }]
                       }
                     },
                     {
@@ -118,99 +45,29 @@
                         "RegexString": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
                         "FieldToMatch": {
                           "JsonBody": {
-                            "MatchPattern": {
-                              "IncludedPaths": [
-                                "/uuid"
-                              ]
-                            },
+                            "MatchPattern": { "IncludedPaths": ["/uuid"] },
                             "MatchScope": "ALL",
-                            "InvalidFallbackBehavior": "MATCH",
+                            "InvalidFallbackBehavior": "NO_MATCH",
                             "OversizeHandling": "CONTINUE"
                           }
                         },
-                        "TextTransformations": [
-                          {
-                            "Priority": 0,
-                            "Type": "NONE"
-                          }
-                        ]
-                      }
-                    },
-                    {
-                      "RegexMatchStatement": {
-                        "RegexString": "^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$",
-                        "FieldToMatch": {
-                          "JsonBody": {
-                            "MatchPattern": {
-                              "IncludedPaths": [
-                                "/email"
-                              ]
-                            },
-                            "MatchScope": "ALL",
-                            "InvalidFallbackBehavior": "MATCH",
-                            "OversizeHandling": "CONTINUE"
-                          }
-                        },
-                        "TextTransformations": [
-                          {
-                            "Priority": 0,
-                            "Type": "NONE"
-                          }
-                        ]
+                        "TextTransformations": [{ "Priority": 0, "Type": "NONE" }]
                       }
                     },
                     {
                       "ByteMatchStatement": {
                         "SearchString": "username",
-                        "FieldToMatch": {
-                          "Body": {
-                            "OversizeHandling": "CONTINUE"
-                          }
-                        },
-                        "TextTransformations": [
-                          {
-                            "Priority": 0,
-                            "Type": "NONE"
-                          }
-                        ],
-                        "PositionalConstraint": "CONTAINS"
+                        "FieldToMatch": { "Body": { "OversizeHandling": "CONTINUE" } },
+                        "PositionalConstraint": "CONTAINS",
+                        "TextTransformations": [{ "Priority": 0, "Type": "NONE" }]
                       }
                     },
                     {
                       "ByteMatchStatement": {
-                        "SearchString": "status_message",
-                        "FieldToMatch": {
-                          "Body": {
-                            "OversizeHandling": "CONTINUE"
-                          }
-                        },
-                        "TextTransformations": [
-                          {
-                            "Priority": 0,
-                            "Type": "NONE"
-                          }
-                        ],
-                        "PositionalConstraint": "CONTAINS"
-                      }
-                    },
-                    {
-                      "NotStatement": {
-                        "Statement": {
-                          "RegexMatchStatement": {
-                            "RegexString": "([^:]*:){6,}",
-                            "FieldToMatch": {
-                              "Body": {
-                                "OversizeHandling": "CONTINUE"
-                              }
-                            },
-                            "TextTransformations": [
-                              {
-                                "Priority": 0,
-                                "Type": "NONE"
-                              }
-                            ]
-                          }
-                        }
+                        "SearchString": "email",
+                        "FieldToMatch": { "Body": { "OversizeHandling": "CONTINUE" } },
+                        "PositionalConstraint": "CONTAINS",
+                        "TextTransformations": [{ "Priority": 0, "Type": "NONE" }]
                       }
                     }
                   ]
@@ -221,32 +78,10 @@
                   "Statements": [
                     {
                       "ByteMatchStatement": {
-                        "SearchString": "POST",
-                        "FieldToMatch": {
-                          "Method": {}
-                        },
-                        "TextTransformations": [
-                          {
-                            "Priority": 0,
-                            "Type": "NONE"
-                          }
-                        ],
-                        "PositionalConstraint": "EXACTLY"
-                      }
-                    },
-                    {
-                      "ByteMatchStatement": {
                         "SearchString": "/v1/product",
-                        "FieldToMatch": {
-                          "UriPath": {}
-                        },
-                        "TextTransformations": [
-                          {
-                            "Priority": 0,
-                            "Type": "NONE"
-                          }
-                        ],
-                        "PositionalConstraint": "EXACTLY"
+                        "FieldToMatch": { "UriPath": {} },
+                        "PositionalConstraint": "EXACTLY",
+                        "TextTransformations": [{ "Priority": 0, "Type": "NONE" }]
                       }
                     },
                     {
@@ -254,22 +89,13 @@
                         "RegexString": "^[0-9]+$",
                         "FieldToMatch": {
                           "JsonBody": {
-                            "MatchPattern": {
-                              "IncludedPaths": [
-                                "/requestid"
-                              ]
-                            },
+                            "MatchPattern": { "IncludedPaths": ["/requestid"] },
                             "MatchScope": "ALL",
-                            "InvalidFallbackBehavior": "MATCH",
+                            "InvalidFallbackBehavior": "NO_MATCH",
                             "OversizeHandling": "CONTINUE"
                           }
                         },
-                        "TextTransformations": [
-                          {
-                            "Priority": 0,
-                            "Type": "NONE"
-                          }
-                        ]
+                        "TextTransformations": [{ "Priority": 0, "Type": "NONE" }]
                       }
                     },
                     {
@@ -277,93 +103,29 @@
                         "RegexString": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
                         "FieldToMatch": {
                           "JsonBody": {
-                            "MatchPattern": {
-                              "IncludedPaths": [
-                                "/uuid"
-                              ]
-                            },
+                            "MatchPattern": { "IncludedPaths": ["/uuid"] },
                             "MatchScope": "ALL",
-                            "InvalidFallbackBehavior": "MATCH",
+                            "InvalidFallbackBehavior": "NO_MATCH",
                             "OversizeHandling": "CONTINUE"
                           }
                         },
-                        "TextTransformations": [
-                          {
-                            "Priority": 0,
-                            "Type": "NONE"
-                          }
-                        ]
-                      }
-                    },
-                    {
-                      "ByteMatchStatement": {
-                        "SearchString": "id",
-                        "FieldToMatch": {
-                          "Body": {
-                            "OversizeHandling": "CONTINUE"
-                          }
-                        },
-                        "TextTransformations": [
-                          {
-                            "Priority": 0,
-                            "Type": "NONE"
-                          }
-                        ],
-                        "PositionalConstraint": "CONTAINS"
+                        "TextTransformations": [{ "Priority": 0, "Type": "NONE" }]
                       }
                     },
                     {
                       "ByteMatchStatement": {
                         "SearchString": "name",
-                        "FieldToMatch": {
-                          "Body": {
-                            "OversizeHandling": "CONTINUE"
-                          }
-                        },
-                        "TextTransformations": [
-                          {
-                            "Priority": 0,
-                            "Type": "NONE"
-                          }
-                        ],
-                        "PositionalConstraint": "CONTAINS"
+                        "FieldToMatch": { "Body": { "OversizeHandling": "CONTINUE" } },
+                        "PositionalConstraint": "CONTAINS",
+                        "TextTransformations": [{ "Priority": 0, "Type": "NONE" }]
                       }
                     },
                     {
                       "ByteMatchStatement": {
                         "SearchString": "price",
-                        "FieldToMatch": {
-                          "Body": {
-                            "OversizeHandling": "CONTINUE"
-                          }
-                        },
-                        "TextTransformations": [
-                          {
-                            "Priority": 0,
-                            "Type": "NONE"
-                          }
-                        ],
-                        "PositionalConstraint": "CONTAINS"
-                      }
-                    },
-                    {
-                      "NotStatement": {
-                        "Statement": {
-                          "RegexMatchStatement": {
-                            "RegexString": "([^:]*:){6,}",
-                            "FieldToMatch": {
-                              "Body": {
-                                "OversizeHandling": "CONTINUE"
-                              }
-                            },
-                            "TextTransformations": [
-                              {
-                                "Priority": 0,
-                                "Type": "NONE"
-                              }
-                            ]
-                          }
-                        }
+                        "FieldToMatch": { "Body": { "OversizeHandling": "CONTINUE" } },
+                        "PositionalConstraint": "CONTAINS",
+                        "TextTransformations": [{ "Priority": 0, "Type": "NONE" }]
                       }
                     }
                   ]
@@ -374,32 +136,10 @@
                   "Statements": [
                     {
                       "ByteMatchStatement": {
-                        "SearchString": "POST",
-                        "FieldToMatch": {
-                          "Method": {}
-                        },
-                        "TextTransformations": [
-                          {
-                            "Priority": 0,
-                            "Type": "NONE"
-                          }
-                        ],
-                        "PositionalConstraint": "EXACTLY"
-                      }
-                    },
-                    {
-                      "ByteMatchStatement": {
                         "SearchString": "/v1/stress",
-                        "FieldToMatch": {
-                          "UriPath": {}
-                        },
-                        "TextTransformations": [
-                          {
-                            "Priority": 0,
-                            "Type": "NONE"
-                          }
-                        ],
-                        "PositionalConstraint": "EXACTLY"
+                        "FieldToMatch": { "UriPath": {} },
+                        "PositionalConstraint": "EXACTLY",
+                        "TextTransformations": [{ "Priority": 0, "Type": "NONE" }]
                       }
                     },
                     {
@@ -407,22 +147,13 @@
                         "RegexString": "^[0-9]+$",
                         "FieldToMatch": {
                           "JsonBody": {
-                            "MatchPattern": {
-                              "IncludedPaths": [
-                                "/requestid"
-                              ]
-                            },
+                            "MatchPattern": { "IncludedPaths": ["/requestid"] },
                             "MatchScope": "ALL",
-                            "InvalidFallbackBehavior": "MATCH",
+                            "InvalidFallbackBehavior": "NO_MATCH",
                             "OversizeHandling": "CONTINUE"
                           }
                         },
-                        "TextTransformations": [
-                          {
-                            "Priority": 0,
-                            "Type": "NONE"
-                          }
-                        ]
+                        "TextTransformations": [{ "Priority": 0, "Type": "NONE" }]
                       }
                     },
                     {
@@ -430,59 +161,21 @@
                         "RegexString": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
                         "FieldToMatch": {
                           "JsonBody": {
-                            "MatchPattern": {
-                              "IncludedPaths": [
-                                "/uuid"
-                              ]
-                            },
+                            "MatchPattern": { "IncludedPaths": ["/uuid"] },
                             "MatchScope": "ALL",
-                            "InvalidFallbackBehavior": "MATCH",
+                            "InvalidFallbackBehavior": "NO_MATCH",
                             "OversizeHandling": "CONTINUE"
                           }
                         },
-                        "TextTransformations": [
-                          {
-                            "Priority": 0,
-                            "Type": "NONE"
-                          }
-                        ]
+                        "TextTransformations": [{ "Priority": 0, "Type": "NONE" }]
                       }
                     },
                     {
                       "ByteMatchStatement": {
                         "SearchString": "length",
-                        "FieldToMatch": {
-                          "Body": {
-                            "OversizeHandling": "CONTINUE"
-                          }
-                        },
-                        "TextTransformations": [
-                          {
-                            "Priority": 0,
-                            "Type": "NONE"
-                          }
-                        ],
-                        "PositionalConstraint": "CONTAINS"
-                      }
-                    },
-                    {
-                      "NotStatement": {
-                        "Statement": {
-                          "RegexMatchStatement": {
-                            "RegexString": "([^:]*:){4,}",
-                            "FieldToMatch": {
-                              "Body": {
-                                "OversizeHandling": "CONTINUE"
-                              }
-                            },
-                            "TextTransformations": [
-                              {
-                                "Priority": 0,
-                                "Type": "NONE"
-                              }
-                            ]
-                          }
-                        }
+                        "FieldToMatch": { "Body": { "OversizeHandling": "CONTINUE" } },
+                        "PositionalConstraint": "CONTAINS",
+                        "TextTransformations": [{ "Priority": 0, "Type": "NONE" }]
                       }
                     }
                   ]
@@ -494,12 +187,10 @@
       ]
     }
   },
-  "Action": {
-    "Allow": {}
-  },
+  "Action": { "Allow": {} },
   "VisibilityConfig": {
     "SampledRequestsEnabled": true,
     "CloudWatchMetricsEnabled": true,
-    "MetricName": "CompleteValidationRule"
+    "MetricName": "AllowValidPOST"
   }
 }

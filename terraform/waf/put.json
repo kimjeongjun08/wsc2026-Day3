@@ -1,0 +1,48 @@
+{
+  "Name": "AllowValidPUT",
+  "Priority": 3,
+  "Statement": {
+    "AndStatement": {
+      "Statements": [
+        {
+          "ByteMatchStatement": {
+            "SearchString": "PUT",
+            "FieldToMatch": { "Method": {} },
+            "PositionalConstraint": "EXACTLY",
+            "TextTransformations": [{ "Priority": 0, "Type": "NONE" }]
+          }
+        },
+        {
+          "ByteMatchStatement": {
+            "SearchString": "/v1/product",
+            "FieldToMatch": { "UriPath": {} },
+            "PositionalConstraint": "EXACTLY",
+            "TextTransformations": [{ "Priority": 0, "Type": "NONE" }]
+          }
+        },
+        {
+          "ByteMatchStatement": {
+            "SearchString": "requestid",
+            "FieldToMatch": { "Body": { "OversizeHandling": "CONTINUE" } },
+            "PositionalConstraint": "CONTAINS",
+            "TextTransformations": [{ "Priority": 0, "Type": "NONE" }]
+          }
+        },
+        {
+          "ByteMatchStatement": {
+            "SearchString": "uuid",
+            "FieldToMatch": { "Body": { "OversizeHandling": "CONTINUE" } },
+            "PositionalConstraint": "CONTAINS",
+            "TextTransformations": [{ "Priority": 0, "Type": "NONE" }]
+          }
+        }
+      ]
+    }
+  },
+  "Action": { "Allow": {} },
+  "VisibilityConfig": {
+    "SampledRequestsEnabled": true,
+    "CloudWatchMetricsEnabled": true,
+    "MetricName": "AllowValidPUT"
+  }
+}

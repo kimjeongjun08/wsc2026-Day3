@@ -38,27 +38,27 @@ resource "aws_security_group" "ec2" {
   tags = { Name = "${local.name}-ec2-sg" }
 }
 
-# Upload application binaries to S3
+# Upload application binaries to S3 (setup 버킷)
 resource "aws_s3_object" "app_binaries" {
   for_each = toset(["user", "product", "stress"])
-  bucket   = aws_s3_bucket.images.bucket
+  bucket   = aws_s3_bucket.setup.bucket
   key      = "application/${each.value}/${each.value}"
   source   = "${path.module}/application/${each.value}/${each.value}"
   etag     = filemd5("${path.module}/application/${each.value}/${each.value}")
 }
 
-# Upload static k8s files to S3
+# Upload static k8s files to S3 (setup 버킷)
 resource "aws_s3_object" "k8s_static" {
   for_each = toset(["service.yaml", "hpa.yaml", "pdb.yaml", "alb.sh", "iam_policy.json", "install-karpenter.sh"])
-  bucket   = aws_s3_bucket.images.bucket
+  bucket   = aws_s3_bucket.setup.bucket
   key      = "k8s/${each.value}"
   source   = "${path.module}/k8s/${each.value}"
   etag     = filemd5("${path.module}/k8s/${each.value}")
 }
 
-# Upload templated deploy.yaml (with correct ECR image URIs)
+# Upload templated deploy.yaml (setup 버킷)
 resource "aws_s3_object" "k8s_deploy" {
-  bucket  = aws_s3_bucket.images.bucket
+  bucket  = aws_s3_bucket.setup.bucket
   key     = "k8s/deploy.yaml"
   content = replace(
     replace(
@@ -75,37 +75,33 @@ resource "aws_s3_object" "k8s_deploy" {
   )
 }
 
-# Upload templated eksctl.yaml (with real subnet IDs)
-resource "aws_s3_object" "k8s_eksctl" {
-  bucket  = aws_s3_bucket.images.bucket
-  key     = "k8s/eksctl.yaml"
-  content = templatefile("${path.module}/k8s/eksctl.yaml", {
-    cluster_name       = "${local.name}-cluster"
-    region             = var.region
-    az_a               = var.azs[0]
-    az_b               = var.azs[1]
-    subnet_a           = aws_subnet.public[0].id
-    subnet_b           = aws_subnet.public[1].id
-    node_instance_type = var.node_instance_type
-  })
-}
-
-# Upload templated karpenter.yaml
+# Upload templated karpenter.yaml (setup 버킷)
 resource "aws_s3_object" "k8s_karpenter" {
-  bucket  = aws_s3_bucket.images.bucket
+  bucket  = aws_s3_bucket.setup.bucket
   key     = "k8s/karpenter.yaml"
   content = templatefile("${path.module}/k8s/karpenter.yaml", {
     name               = local.name
-    cluster_name       = "${local.name}-cluster"
+    cluster_name       = aws_eks_cluster.this.name
     node_instance_type = var.node_instance_type
     subnet_a           = aws_subnet.public[0].id
     subnet_b           = aws_subnet.public[1].id
   })
 }
 
-# Upload templated configmap.yaml (with real DB/S3 values)
+# Upload templated tgb.yaml (setup 버킷)
+resource "aws_s3_object" "k8s_tgb" {
+  bucket  = aws_s3_bucket.setup.bucket
+  key     = "k8s/tgb.yaml"
+  content = templatefile("${path.module}/k8s/tgb.yaml", {
+    tg_user_arn    = aws_lb_target_group.user.arn
+    tg_product_arn = aws_lb_target_group.product.arn
+    tg_stress_arn  = aws_lb_target_group.stress.arn
+  })
+}
+
+# Upload templated configmap.yaml (setup 버킷)
 resource "aws_s3_object" "k8s_configmap" {
-  bucket  = aws_s3_bucket.images.bucket
+  bucket  = aws_s3_bucket.setup.bucket
   key     = "k8s/configmap.yaml"
   content = templatefile("${path.module}/k8s/configmap.yaml", {
     db_host   = aws_db_proxy.this.endpoint
@@ -118,6 +114,14 @@ resource "aws_s3_object" "k8s_configmap" {
   })
 }
 
+# dump 로드
+resource "aws_s3_object" "dump_sql" {
+  bucket = aws_s3_bucket.setup.bucket
+  key    = "load_user.dump"
+  source = "${path.module}/load_user.dump"
+  etag   = filemd5("${path.module}/load_user.dump")
+}
+
 resource "aws_instance" "bastion" {
   ami                         = data.aws_ssm_parameter.al2023.value
   instance_type               = "t3.small"
@@ -128,28 +132,24 @@ resource "aws_instance" "bastion" {
 
   user_data = templatefile("${path.module}/userdata.tpl", {
     setup_script = templatefile("${path.module}/setup.sh", {
-      region       = var.region
-      account_id   = data.aws_caller_identity.current.account_id
-      db_host      = aws_db_instance.this.address
-      db_port      = "3306"
-      db_user      = "admin"
-      db_pass      = "Skill53##"
-      db_name      = var.db_name
-      s3_bucket    = aws_s3_bucket.images.bucket
-      cluster_name = "${local.name}-cluster"
-      vpc_id       = aws_vpc.this.id
-      subnet_ids   = join(",", aws_subnet.public[*].id)
-      alb_sg_id    = aws_security_group.alb.id
-      tg_user_arn  = aws_lb_target_group.user.arn
-      tg_product_arn = aws_lb_target_group.product.arn
-      tg_stress_arn  = aws_lb_target_group.stress.arn
+      region         = var.region
+      account_id     = data.aws_caller_identity.current.account_id
+      db_host        = aws_db_instance.this.address
+      db_port        = "3306"
+      db_user        = "admin"
+      db_pass        = "Skill53##"
+      db_name        = var.db_name
+      s3_bucket      = aws_s3_bucket.images.bucket
+      setup_bucket   = aws_s3_bucket.setup.bucket
+      cluster_name   = aws_eks_cluster.this.name
+      vpc_id         = aws_vpc.this.id
       ecr_prefix     = local.name
     })
-    artifacts_bucket = aws_s3_bucket.images.bucket
+    artifacts_bucket = aws_s3_bucket.setup.bucket
     region           = var.region
   })
 
   tags = { Name = "${local.name}-bastion" }
 
-  depends_on = [aws_db_proxy_target.this, aws_ecr_repository.this, aws_s3_object.k8s_eksctl, aws_s3_object.k8s_configmap, aws_s3_object.k8s_static, aws_s3_object.app_binaries]
+  depends_on = [aws_db_proxy_target.this, aws_ecr_repository.this, aws_eks_node_group.this, aws_s3_object.k8s_configmap, aws_s3_object.k8s_tgb, aws_s3_object.k8s_static, aws_s3_object.app_binaries, aws_s3_object.dump_sql]
 }

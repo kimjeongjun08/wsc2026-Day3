@@ -2,6 +2,7 @@ resource "random_id" "bucket" {
   byte_length = 4
 }
 
+# images 버킷: 실제 앱 동작용 (CloudFront 연동)
 resource "aws_s3_bucket" "images" {
   bucket        = "${local.name}-images-${random_id.bucket.hex}"
   force_destroy = true
@@ -18,16 +19,12 @@ resource "aws_s3_bucket_public_access_block" "images" {
 
 resource "aws_s3_bucket_ownership_controls" "images" {
   bucket = aws_s3_bucket.images.id
-  rule {
-    object_ownership = "BucketOwnerEnforced"
-  }
+  rule { object_ownership = "BucketOwnerEnforced" }
 }
 
 resource "aws_s3_bucket_versioning" "images" {
   bucket = aws_s3_bucket.images.id
-  versioning_configuration {
-    status = "Disabled"
-  }
+  versioning_configuration { status = "Disabled" }
 }
 
 resource "aws_s3_bucket_cors_configuration" "images" {
@@ -40,7 +37,6 @@ resource "aws_s3_bucket_cors_configuration" "images" {
   }
 }
 
-# Bucket policy: allow CloudFront OAC
 data "aws_iam_policy_document" "images" {
   statement {
     sid     = "AllowCloudFrontReadViaOAC"
@@ -61,4 +57,49 @@ data "aws_iam_policy_document" "images" {
 resource "aws_s3_bucket_policy" "images" {
   bucket = aws_s3_bucket.images.id
   policy = data.aws_iam_policy_document.images.json
+}
+
+# setup 버킷: setup.sh 실행 시 사용하는 아티팩트 임시 저장용 (setup 완료 후 객체 삭제)
+resource "aws_s3_bucket" "setup" {
+  bucket        = "${local.name}-setup-${random_id.bucket.hex}"
+  force_destroy = true
+  tags          = { Name = "${local.name}-setup" }
+}
+
+resource "aws_s3_bucket_public_access_block" "setup" {
+  bucket                  = aws_s3_bucket.setup.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+# ALB 로그 버킷
+data "aws_elb_service_account" "main" {}
+
+resource "aws_s3_bucket" "alb_logs" {
+  bucket        = "${local.name}-alb-logs-${random_id.bucket.hex}"
+  force_destroy = true
+  tags          = { Name = "${local.name}-alb-logs" }
+}
+
+resource "aws_s3_bucket_public_access_block" "alb_logs" {
+  bucket                  = aws_s3_bucket.alb_logs.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_policy" "alb_logs" {
+  bucket = aws_s3_bucket.alb_logs.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { AWS = data.aws_elb_service_account.main.arn }
+      Action    = "s3:PutObject"
+      Resource  = "${aws_s3_bucket.alb_logs.arn}/AWSLogs/*"
+    }]
+  })
 }

@@ -1,0 +1,35 @@
+apiVersion: elbv2.k8s.aws/v1beta1
+kind: TargetGroupBinding
+metadata:
+  name: user-tgb
+  namespace: apdev
+spec:
+  serviceRef:
+    name: user-svc
+    port: 8080
+  targetGroupARN: ${tg_user_arn}
+  targetType: ip
+---
+apiVersion: elbv2.k8s.aws/v1beta1
+kind: TargetGroupBinding
+metadata:
+  name: product-tgb
+  namespace: apdev
+spec:
+  serviceRef:
+    name: product-svc
+    port: 8080
+  targetGroupARN: ${tg_product_arn}
+  targetType: ip
+---
+apiVersion: elbv2.k8s.aws/v1beta1
+kind: TargetGroupBinding
+metadata:
+  name: stress-tgb
+  namespace: apdev
+spec:
+  serviceRef:
+    name: stress-svc
+    port: 8080
+  targetGroupARN: ${tg_stress_arn}
+  targetType: ip

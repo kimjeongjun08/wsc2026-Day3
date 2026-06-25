@@ -20,10 +20,11 @@ resource "aws_cloudfront_function" "strip_images_prefix" {
   EOT
 }
 
+# S3 이미지: 최대 캐시 + 최소 레이턴시
 resource "aws_cloudfront_cache_policy" "images" {
   name        = "${local.name}-images"
-  min_ttl     = 86400
-  default_ttl = 604800
+  min_ttl     = 2592000
+  default_ttl = 2592000
   max_ttl     = 2592000
 
   parameters_in_cache_key_and_forwarded_to_origin {
@@ -35,19 +36,17 @@ resource "aws_cloudfront_cache_policy" "images" {
   }
 }
 
-resource "aws_cloudfront_cache_policy" "alb" {
-  name        = "${local.name}-alb-cache"
-  min_ttl     = 0
-  default_ttl = 0
-  max_ttl     = 1
-
-  parameters_in_cache_key_and_forwarded_to_origin {
-    enable_accept_encoding_brotli = true
-    enable_accept_encoding_gzip   = true
-    cookies_config { cookie_behavior = "none" }
-    headers_config { header_behavior = "none" }
-    query_strings_config { query_string_behavior = "all" }
+# Origin request policy: 모든 쿼리스트링/헤더 전달 (ALB pass-through)
+resource "aws_cloudfront_origin_request_policy" "all_viewer" {
+  name = "${local.name}-all-viewer"
+  cookies_config { cookie_behavior = "all" }
+  headers_config {
+    header_behavior = "whitelist"
+    headers {
+      items = ["Content-Type", "Content-Length"]
+    }
   }
+  query_strings_config { query_string_behavior = "all" }
 }
 
 resource "aws_cloudfront_distribution" "this" {
@@ -56,6 +55,7 @@ resource "aws_cloudfront_distribution" "this" {
   comment         = "${local.name} CDN"
   http_version    = "http2and3"
   price_class     = "PriceClass_200"
+  web_acl_id      = aws_wafv2_web_acl.cloudfront.arn
 
   origin {
     domain_name              = aws_s3_bucket.images.bucket_regional_domain_name
@@ -75,15 +75,7 @@ resource "aws_cloudfront_distribution" "this" {
     }
   }
 
-  default_cache_behavior {
-    target_origin_id       = "alb"
-    viewer_protocol_policy = "allow-all"
-    allowed_methods        = ["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"]
-    cached_methods         = ["GET", "HEAD"]
-    compress               = true
-    cache_policy_id        = aws_cloudfront_cache_policy.alb.id
-  }
-
+  # /images/* → S3 (장기 캐시)
   ordered_cache_behavior {
     path_pattern           = "/images/*"
     target_origin_id       = "s3-images"
@@ -97,6 +89,17 @@ resource "aws_cloudfront_distribution" "this" {
       event_type   = "viewer-request"
       function_arn = aws_cloudfront_function.strip_images_prefix.arn
     }
+  }
+
+  # default → ALB pass-through (캐시 비활성화)
+  default_cache_behavior {
+    target_origin_id         = "alb"
+    viewer_protocol_policy   = "allow-all"
+    allowed_methods          = ["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"]
+    cached_methods           = ["GET", "HEAD"]
+    compress                 = true
+    cache_policy_id          = "4135ea2d-6df8-44a3-9df3-4b5a84be39ad" # CachingDisabled managed policy
+    origin_request_policy_id = aws_cloudfront_origin_request_policy.all_viewer.id
   }
 
   restrictions {

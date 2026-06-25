@@ -20,10 +20,14 @@ output "s3_bucket" {
   value = aws_s3_bucket.images.bucket
 }
 
+output "alb_logs_bucket" {
+  value = aws_s3_bucket.alb_logs.bucket
+}
+
 output "ec2_instance_id" {
   value = aws_instance.bastion.id
 }
 
 output "waf_acl_arn" {
-  value = aws_wafv2_web_acl.regional.arn
+  value = aws_wafv2_web_acl.cloudfront.arn
 }
