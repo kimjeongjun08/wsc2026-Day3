@@ -26,15 +26,8 @@ THRESHOLDS = {
     "product": {"avg_ms": 300,  "5xx": 5},
     "stress":  {"avg_ms": 1500, "5xx": 5},
 }
-POD_THRESHOLDS = {
-    "user":    {"avg_ms": 400,  "5xx": 10},
-    "product": {"avg_ms": 400,  "5xx": 10},
-    "stress":  {"avg_ms": 2000, "5xx": 10},
-}
+
 # adaptive 임계값
-SLO_MS   = {"user": 200, "product": 200, "stress": 1000}
-UTIL_MIN = {"user": 40,  "product": 40,  "stress": 30}
-UTIL_MAX = {"user": 85,  "product": 85,  "stress": 70}
 
 _buf     = {}
 _pod_app = {}
@@ -45,7 +38,6 @@ _state = {
     "nodes":    [],
     "events":   deque(maxlen=20),
 }
-_restarting = set()
 
 def kubectl(cmd):
     r = subprocess.run(f"kubectl {cmd}", shell=True, capture_output=True, text=True)
@@ -59,21 +51,6 @@ def set_min_replicas(app, val):
     patch = json.dumps({"spec": {"minReplicas": val}}).replace('"', '\\"')
     ok, _ = kubectl(f'-n {NAMESPACE} patch hpa/{app}-hpa --type=merge -p "{patch}"')
     return ok
-
-def set_util(app, util):
-    patch = json.dumps({"spec": {"metrics": [{"type": "Resource", "resource": {
-        "name": "cpu", "target": {"type": "Utilization", "averageUtilization": util}
-    }}]}}).replace('"', '\\"')
-    ok, _ = kubectl(f'-n {NAMESPACE} patch hpa/{app}-hpa --type=merge -p "{patch}"')
-    return ok
-
-def get_current_util(app):
-    ok, out = kubectl(f'-n {NAMESPACE} get hpa/{app}-hpa -o '
-                      f'jsonpath="{{.spec.metrics[0].resource.target.averageUtilization}}"')
-    try:
-        return int(out.strip('"')) if ok else 70
-    except Exception:
-        return 70
 
 def get_pods(app):
     ok, out = kubectl(f'-n {NAMESPACE} get pods -l app={app} --no-headers '
@@ -145,7 +122,7 @@ def watch_pods():
                 if len(parts) == 2 and parts[1] in APPS and parts[0] not in active:
                     active.add(parts[0])
                     threading.Thread(target=stream_pod, args=(parts[0], parts[1]), daemon=True).start()
-        time.sleep(15)
+        time.sleep(5)
 
 def p95(values):
     if not values: return 0
@@ -153,13 +130,20 @@ def p95(values):
     return s[min(int(len(s) * 0.95), len(s) - 1)]
 
 # ── adaptive 루프 (60초 주기) ──
-def adaptive_loop():
-    stable_count = {app: 0 for app in APPS}
-    frozen       = {app: False for app in APPS}
-    time.sleep(60)  # 초기 데이터 수집 대기
+def scale_loop():
+    """30초마다: 즉각 scale (응답/5xx 감지) + 카펜터 노드 정리"""
+    # 즉각 scale 임계값 (30초 윈도우)
+    SCALE_THRESHOLDS = {
+        "user":    {"avg_ms": 300, "5xx": 5},
+        "product": {"avg_ms": 300, "5xx": 5},
+        "stress":  {"5xx": 10},  # stress는 5xx만
+    }
+    last_scaled = {app: 0 for app in APPS}  # 쿨다운: 마지막 scale 시각
+
+    time.sleep(30)
 
     while True:
-        cutoff = time.time() - 60
+        cutoff = time.time() - 30
         with _lock:
             app_data = {app: [] for app in APPS}
             for pod, entries in _buf.items():
@@ -167,36 +151,34 @@ def adaptive_loop():
                 if app:
                     app_data[app].extend([e for e in entries if e[0] >= cutoff])
 
+        # 즉각 scale: 임계값 초과 시 replicas +2
         for app in APPS:
-            if frozen[app]:
-                continue
             data = app_data[app]
             if not data:
                 continue
+            # 쿨다운 60초
+            if time.time() - last_scaled[app] < 30:
+                continue
 
-            p95_ms   = p95([d[1] for d in data])
-            slo_ms   = SLO_MS[app]
-            margin   = (slo_ms - p95_ms) / slo_ms
-            cur_util = get_current_util(app)
+            avg_ms  = sum(d[1] for d in data) / len(data)
+            cnt_5xx = sum(1 for d in data if d[2] >= 500)
+            thr = SCALE_THRESHOLDS[app]
 
-            if p95_ms > slo_ms:
-                new_util = max(UTIL_MIN[app], cur_util - 5)
-                stable_count[app] = 0
-                if new_util != cur_util:
-                    set_util(app, new_util)
-                    log_event(f"adaptive ↓ {app} util {cur_util}→{new_util}% (p95={p95_ms:.0f}ms)")
-            elif margin >= 0.20:
-                new_util = min(UTIL_MAX[app], cur_util + 5)
-                if new_util != cur_util:
-                    set_util(app, new_util)
-                    log_event(f"adaptive ↑ {app} util {cur_util}→{new_util}% (여유 {margin:.0%})")
-            else:
-                stable_count[app] += 1
-                if stable_count[app] >= 3:
-                    frozen[app] = True
-                    log_event(f"adaptive ✓ {app} util={cur_util}% 수렴 완료")
+            breach = cnt_5xx >= thr.get("5xx", 999)
+            if "avg_ms" in thr:
+                breach = breach or avg_ms >= thr["avg_ms"]
 
-        # 카펜터 노드에 앱 파드 1~2개만 남아있으면 cordon + evict → MNG로 이동 → 노드 자동 삭제
+            if breach:
+                with _lock:
+                    cur = _state["replicas"].get(app, 1)
+                add = 5 if app == "stress" else 2
+                new_replicas = cur + add
+                ok, _ = kubectl(f"-n {NAMESPACE} scale deploy/{app} --replicas={new_replicas}")
+                if ok:
+                    last_scaled[app] = time.time()
+                    log_event(f"⚡ {app} scale {cur}→{new_replicas} (avg={avg_ms:.0f}ms 5xx={cnt_5xx})")
+
+        # 카펜터 노드 정리
         ok, karp_out = kubectl("get nodes -l karpenter.sh/nodepool --no-headers "
                                "-o custom-columns=NAME:.metadata.name,SCHED:.spec.unschedulable")
         if ok and karp_out:
@@ -205,7 +187,7 @@ def adaptive_loop():
                 if not parts: continue
                 knode = parts[0]
                 if len(parts) > 1 and parts[1] == "true":
-                    continue  # 이미 cordoned
+                    continue
                 ok2, pods_out = kubectl(f"-n {NAMESPACE} get pods --field-selector spec.nodeName={knode} "
                                         f"--no-headers -o custom-columns=NAME:.metadata.name")
                 if not ok2 or not pods_out or not pods_out.strip():
@@ -217,11 +199,11 @@ def adaptive_loop():
                         kubectl(f"-n {NAMESPACE} delete pod {p} --grace-period=10")
                     log_event(f"🔄 {knode.split('.')[0]} 파드→MNG ({len(apdev_pods)}개)")
 
-        time.sleep(60)
+        time.sleep(30)
 
 # ── 메인 루프 (1초 주기) ──
 def main():
-    for fn in [poll_replicas, poll_nodes, watch_pods, adaptive_loop]:
+    for fn in [poll_replicas, poll_nodes, watch_pods, scale_loop]:
         threading.Thread(target=fn, daemon=True).start()
     time.sleep(2)
 
@@ -240,67 +222,17 @@ def main():
             nodes     = list(_state["nodes"])
             events    = list(_state["events"])
 
-        # Pending 파드 → 오래된 파드 교체
-        ok, pending_out = kubectl(f'-n {NAMESPACE} get pods --field-selector=status.phase=Pending '
-                                  f'--no-headers -o custom-columns=NAME:.metadata.name,APP:.metadata.labels.app')
-        if ok and pending_out:
-            for line in pending_out.splitlines():
-                parts = line.split()
-                if len(parts) == 2 and parts[1] in APPS:
-                    ok2, running_out = kubectl(
-                        f'-n {NAMESPACE} get pods -l app={parts[1]} --field-selector=status.phase=Running '
-                        f'--no-headers --sort-by=.metadata.creationTimestamp '
-                        f'-o custom-columns=NAME:.metadata.name')
-                    if ok2 and running_out:
-                        oldest = running_out.splitlines()[0].strip()
-                        if oldest and oldest not in _restarting:
-                            _restarting.add(oldest)
-                            log_event(f"⚡ Pending {parts[0][:20]} → {oldest[:20]} 교체")
-                            def _evict(p=oldest):
-                                kubectl(f'-n {NAMESPACE} delete pod {p} --grace-period=5')
-                                time.sleep(35); _restarting.discard(p)
-                            threading.Thread(target=_evict, daemon=True).start()
-
-        # 파드별 메트릭 집계 + 우선순위 기반 교체
-        # 우선순위: 5xx 많음 > avg 느림 > 오래된 파드
+        # 앱별 메트릭 집계 (파드 교체 없음 — HPA/Deployment가 관리)
         app_data = {app: [] for app in APPS}
-        pod_metrics = []  # (score, pod, app, avg_ms, cnt_5xx)
-
         for pod, (app, data) in pod_snap.items():
             app_data[app].extend(data)
-            if pod in _restarting:
-                continue
-            if not data:
-                continue
-            avg_ms  = sum(d[1] for d in data) / len(data)
-            cnt_5xx = sum(1 for d in data if d[2] >= 500)
-            thr = POD_THRESHOLDS[app]
-            # 임계값 초과한 파드만 후보 (높을수록 나쁜 파드)
-            if avg_ms >= thr["avg_ms"] or cnt_5xx >= thr["5xx"]:
-                score = cnt_5xx * 1000 + avg_ms  # 5xx 우선, 같으면 느린 것
-                pod_metrics.append((score, pod, app, avg_ms, cnt_5xx))
-
-        # 앱당 가장 나쁜 파드 1개씩만 교체 (한꺼번에 너무 많이 죽이지 않도록)
-        replaced_apps = set()
-        for score, pod, app, avg_ms, cnt_5xx in sorted(pod_metrics, reverse=True):
-            if app in replaced_apps:
-                continue
-            replaced_apps.add(app)
-            _restarting.add(pod)
-            reason = (f"avg={avg_ms:.0f}ms" if avg_ms >= POD_THRESHOLDS[app]["avg_ms"] else "") + \
-                     (f" 5xx={cnt_5xx}" if cnt_5xx >= POD_THRESHOLDS[app]["5xx"] else "")
-            log_event(f"⚠ {pod[:28]} 교체 [{reason.strip()}]")
-            def _del(p=pod):
-                kubectl(f'-n {NAMESPACE} delete pod {p} --grace-period=10')
-                time.sleep(35); _restarting.discard(p)
-            threading.Thread(target=_del, daemon=True).start()
 
 
 
         # ── 출력 ──
         print("\033[H", end="")
         print(f"{'─'*65}")
-        print(f"  Scaler+Adaptive  {time.strftime('%H:%M:%S')}   긴급:30s | 최적화:60s")
+        print(f"  Scaler  {time.strftime('%H:%M:%S')}   모니터링:1s | 스케일:30s")
         print(f"{'─'*65}")
 
         managed = [n for n in nodes if n["role"] == "managed"]
@@ -309,21 +241,20 @@ def main():
               + " ".join(f"{n['name']}({n['type']})" for n in nodes))
         print()
 
-        print(f"  {'앱':<10} {'avg':>7} {'5xx':>5} {'pods':>5} {'util':>5}  상태")
-        print(f"  {'─'*50}")
+        print(f"  {'앱':<10} {'avg':>7} {'5xx':>5} {'pods':>5}  상태")
+        print(f"  {'─'*45}")
         for app in APPS:
             data = app_data[app]
             cur  = replicas[app]
-            util = get_current_util(app)
             if not data:
-                print(f"  {app:<10} {'N/A':>7} {'N/A':>5} {cur:>5} {util:>4}%  트래픽 없음\033[K")
+                print(f"  {app:<10} {'N/A':>7} {'N/A':>5} {cur:>5}  트래픽 없음\033[K")
                 continue
             avg_ms  = sum(d[1] for d in data) / len(data)
             cnt_5xx = sum(1 for d in data if d[2] >= 500)
             thr = THRESHOLDS[app]
-            breached = avg_ms >= thr["avg_ms"] or cnt_5xx >= thr["5xx"]
+            breached = avg_ms >= thr.get("avg_ms", 99999) or cnt_5xx >= thr.get("5xx", 999)
             flag = "⚠" if breached else "✓"
-            print(f"  {app:<10} {avg_ms:>6.0f}ms {cnt_5xx:>5} {cur:>5} {util:>4}%  {flag}\033[K")
+            print(f"  {app:<10} {avg_ms:>6.0f}ms {cnt_5xx:>5} {cur:>5}  {flag}\033[K")
 
         print()
         print(f"  이벤트")

@@ -50,12 +50,13 @@ resource "aws_wafv2_web_acl" "cloudfront" {
                   }
                 }
                 statement {
-                  byte_match_statement {
-                    search_string         = "email="
+                  regex_match_statement {
+                    regex_string = "^[a-zA-Z0-9._%+\\-]+@[a-zA-Z0-9.\\-]+\\.[a-zA-Z]{2,}$"
                     field_to_match {
-                      query_string {}
+                      single_query_argument {
+                        name = "email"
+                      }
                     }
-                    positional_constraint = "CONTAINS"
                     text_transformation {
                       priority = 0
                       type     = "NONE"
@@ -121,12 +122,13 @@ resource "aws_wafv2_web_acl" "cloudfront" {
                   }
                 }
                 statement {
-                  byte_match_statement {
-                    search_string         = "id="
+                  regex_match_statement {
+                    regex_string = "^[a-zA-Z0-9_\\-]+$"
                     field_to_match {
-                      query_string {}
+                      single_query_argument {
+                        name = "id"
+                      }
                     }
-                    positional_constraint = "CONTAINS"
                     text_transformation {
                       priority = 0
                       type     = "NONE"

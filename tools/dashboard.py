@@ -15,7 +15,7 @@ history = deque(maxlen=480)
 
 def cw_get(ns, metric, dims, stat="Average", period=60, region=None):
     end = datetime.utcnow()
-    start = end - timedelta(minutes=5)
+    start = end - timedelta(minutes=1)
     dim_args = ["--dimensions"] + [f"Name={k},Value={v}" for k, v in dims.items()]
     cmd = ["aws", "cloudwatch", "get-metric-statistics", "--namespace", ns, "--metric-name", metric,
            "--start-time", start.strftime("%Y-%m-%dT%H:%M:%S"), "--end-time", end.strftime("%Y-%m-%dT%H:%M:%S"),

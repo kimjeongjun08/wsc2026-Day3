@@ -52,3 +52,6 @@ spec:
         volumeSize: 20Gi
         volumeType: gp3
         deleteOnTermination: true
+  metadataOptions:
+    httpPutResponseHopLimit: 2
+    httpTokens: required

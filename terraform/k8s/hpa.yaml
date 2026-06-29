@@ -19,10 +19,10 @@ spec:
           periodSeconds: 15
       selectPolicy: Max
     scaleDown:
-      stabilizationWindowSeconds: 60
+      stabilizationWindowSeconds: 30
       policies:
         - type: Percent
-          value: 50
+          value: 100
           periodSeconds: 15
       selectPolicy: Max
   metrics:
@@ -54,10 +54,10 @@ spec:
           periodSeconds: 15
       selectPolicy: Max
     scaleDown:
-      stabilizationWindowSeconds: 60
+      stabilizationWindowSeconds: 30
       policies:
         - type: Percent
-          value: 50
+          value: 100
           periodSeconds: 15
       selectPolicy: Max
   metrics:
@@ -78,21 +78,21 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: stress
-  minReplicas: 1
+  minReplicas: 2
   maxReplicas: 50
   behavior:
     scaleUp:
       stabilizationWindowSeconds: 0
       policies:
         - type: Pods
-          value: 5
+          value: 10
           periodSeconds: 15
       selectPolicy: Max
     scaleDown:
-      stabilizationWindowSeconds: 60
+      stabilizationWindowSeconds: 30
       policies:
         - type: Percent
-          value: 50
+          value: 100
           periodSeconds: 15
       selectPolicy: Max
   metrics:

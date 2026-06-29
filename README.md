@@ -1,4 +1,4 @@
-# ⚠️ 시작 전 필수: `terraform/application/{user,product,stress}/` 바이너리 + `terraform/load_user.dump` 파일을 실제 대회용으로 교체하세요!
+# ⚠️ 시작 전 필수: `terraform/application/{user,product,stress}/` 바이너리 + `terraform/application/load_user.dump` 파일을 실제 대회용으로 교체하세요!
 
 ---
 
@@ -13,10 +13,10 @@ CloudFront (WAF) → ALB → EKS (HPA + Karpenter) → RDS Proxy → RDS MySQL
 ```
 
 - **CloudFront**: CDN + WAF (화이트리스트 default block)
-- **ALB**: user/product/stress 라우팅
-- **EKS**: MNG 1대 고정 + Karpenter 오토스케일
-- **RDS**: MySQL 8.0, Multi-AZ, RDS Proxy 연결 풀링
-- **S3**: images 버킷 (앱 동작), setup 버킷 (배포용 임시), alb-logs 버킷 (ALB 로그)
+- **ALB**: user/product/stress 라우팅 (deregistration delay 30s)
+- **EKS**: MNG 1대 고정 + Karpenter 오토스케일 (budget 100%)
+- **RDS**: MySQL 8.0, Multi-AZ, RDS Proxy 연결 풀링 (90%/30%)
+- **S3**: images (앱 동작), setup (배포 임시, 완료 후 삭제), alb-logs (ALB 로그)
 
 ---
 
@@ -27,7 +27,7 @@ CloudFront (WAF) → ALB → EKS (HPA + Karpenter) → RDS Proxy → RDS MySQL
 | user 바이너리 | `terraform/application/user/user` |
 | product 바이너리 | `terraform/application/product/product` |
 | stress 바이너리 | `terraform/application/stress/stress` |
-| DB dump | `terraform/load_user.dump` |
+| DB dump | `terraform/application/load_user.dump` |
 
 ---
 
@@ -37,95 +37,72 @@ CloudFront (WAF) → ALB → EKS (HPA + Karpenter) → RDS Proxy → RDS MySQL
 
 ```bash
 cd terraform
-
-# terraform.tfvars 또는 -var 로 필수값 지정
 terraform apply \
   -var="node_instance_type=t3.medium" \
   -var="db_instance_class=db.t3.micro" \
   -var="db_allocated_storage=200"
 ```
 
-완료 후 출력값 확인:
+완료 후:
 ```bash
 terraform output
-# endpoint          → CloudFront 엔드포인트 (k6, autotune에 사용)
+# endpoint          → CloudFront 엔드포인트
 # alb_dns           → ALB DNS
-# alb_logs_bucket   → ALB 로그 버킷명 (dashboard에서 자동 감지)
+# alb_logs_bucket   → ALB 로그 버킷명
 ```
 
-### 2. setup.sh 자동 실행 확인
+### 2. setup.sh 완료 확인
 
-bastion EC2에 접속해서 진행 상황 확인:
 ```bash
-# AWS 콘솔 → EC2 → Session Manager 접속
+# bastion EC2 접속 (Session Manager)
 tail -f /home/ec2-user/setup.log
+# === SETUP COMPLETE === 출력까지 대기
 ```
 
-`=== SETUP COMPLETE ===` 출력되면 완료.
-
-완료되는 것들:
-- MySQL 테이블 생성 + dump 로드
-- ECR 이미지 빌드/푸시 (user, product, stress)
-- EKS: LBC 설치, Karpenter 설치, 앱 배포, HPA 적용
-
-### 3. Autotune (HPA/Karpenter 튜닝)
+### 3. Preflight 검증
 
 ```bash
 cd tools
-python autotune.py <CloudFront endpoint>
-
-# 입력:
-# 노드 타입: t3.medium (대회 환경에 맞게)
-# 최대 노드 수: 4 (MNG 1 + Karpenter 최대 3)
+python preflight.py <CloudFront endpoint>
+# 인프라 + API + WAF 전체 헬스체크
+# ✅ 전체 통과 확인 후 다음 단계
 ```
 
-내부 동작:
-1. 20초 워밍업 부하 → 실측 CPU 측정
-2. HPA maxReplicas/request/util 계산
-3. Karpenter NodePool limits 계산
-4. 확인 후 y → 적용 + 45초 검증
-5. 카펜터 노드 cordon → rollout restart → drain → MNG 1대로 수렴
+### 4. Autotune (HPA/Karpenter 튜닝)
+
+```bash
+python autotune.py <CloudFront endpoint>
+# 노드 타입, 최대 노드 수 입력
+# → 워밍업 → 계산 → 적용 → 검증 → MNG 1대로 수렴
+```
 
 ---
 
 ## 채점 2시간: 트래픽 수신
 
-### 실행 순서
+### 실행 순서 (터미널 3~4개)
 
-**터미널 1: WAF 헤더 화이트리스트 (트래픽 시작 직후)**
+**터미널 1: WAF 헤더 화이트리스트 (트래픽 시작 직후 1회)**
 ```bash
-cd tools
 python update_waf.py
-# 90초 수집 후 허용 헤더 화이트리스트 적용
-# → 비정상 헤더 요청 차단
+# 90초 헤더 수집 → 화이트리스트 적용 → 완료 후 종료
 ```
 
-**터미널 2: 응답시간/5xx 기반 보조 스케일러 (2시간 내내)**
+**터미널 2: scaler (2시간 내내 실행)**
 ```bash
-cd tools
 python scaler.py
-# 파드 로그 스트리밍 → 문제 파드 재시작 + minReplicas 보조
 ```
+역할:
+- 1초마다: 파드별 응답시간/5xx 감지 → 나쁜 파드 교체
+- 30초마다: 카펜터 노드 파드 1~2개 남으면 MNG로 이동 → 노드 정리
+- 60초마다: p95 기반 HPA util 자동 조정 (adaptive, SLO 수렴)
+- Pending 파드 감지 → 오래된 파드 교체로 자리 확보
 
-**터미널 3: HPA util 자동 최적화 (수렴하면 자동 종료)**
+**터미널 3: 모니터링 (선택)**
 ```bash
-cd tools
-python adaptive.py
-# 60초마다 p95 측정 → SLO 기반 HPA util 자동 조정
-# SLO 달성 + 안정 3회 연속 → 수렴 완료 후 자동 종료
-```
-
-**터미널 4: 모니터링 대시보드**
-```bash
-cd tools
-python dashboard.py
-# http://localhost:9090
-```
-
-**터미널 5: 파드 로그 모니터링 (선택)**
-```bash
-cd tools
-python podlog.py
+python dashboard.py    # http://localhost:9090 (웹 대시보드)
+# 또는
+python podlog.py       # 터미널 UI (로그 + WAF + 파드 상태)
 ```
 
 ---
@@ -139,43 +116,36 @@ python podlog.py
 | 3. 성능 효율성 | 12점 | user/product ≤0.2s, stress ≤1.0s 처리율 30~90% |
 | 4. 비용 최적화 | 12점 | cost ratio 0.5~3.75 (모든 API performance 30% 이상 조건) |
 
-**전략**: 성능(3번) 배점이 비용(4번)의 2배 → 성능 우선, 트래픽 없을 때 노드 최소화
+**전략**: 성능(24점) > 비용(12점) → 성능 우선, 트래픽 없을 때 노드 최소화
 
 ---
 
-## 툴 상세
+## 툴 목록
 
-### autotune.py
-- **위치**: `tools/autotune.py`
-- **용도**: HPA/Karpenter 최적값 자동 계산 및 적용
-- **실행**: `python autotune.py <endpoint>`
+| 툴 | 용도 | 실행 시점 |
+|---|---|---|
+| `preflight.py` | 인프라+API+WAF 전체 헬스체크 | setup 완료 후, autotune 전 |
+| `autotune.py` | HPA/Karpenter 최적값 계산+적용 | 준비 시간 (1회) |
+| `update_waf.py` | WAF 헤더 화이트리스트 적용 | 채점 트래픽 시작 직후 (1회) |
+| `scaler.py` | 파드 교체 + adaptive util + 노드 정리 | 채점 2시간 내내 |
+| `dashboard.py` | 웹 대시보드 (ALB/RDS/WAF/HPA) | 선택 |
+| `podlog.py` | 터미널 UI (로그+WAF+파드 상태) | 선택 |
 
-### scaler.py
-- **위치**: `tools/scaler.py`
-- **용도**: 파드별 응답시간/5xx 기반 문제 파드 재시작 + minReplicas 보조
-- **실행**: `python scaler.py`
+---
 
-### adaptive.py
-- **위치**: `tools/adaptive.py`
-- **용도**: 실제 채점 트래픽 기반 HPA util 자동 최적화 (SLO 수렴)
-- **실행**: `python adaptive.py`
-- **동작**: 60초마다 p95 측정 → SLO 미달 시 util↓, 여유 시 util↑ → 안정 3회 연속 시 수렴 종료
+## scaler.py 상세 기준
 
-### update_waf.py
-- **위치**: `tools/update_waf.py`
-- **용도**: WAF 헤더 화이트리스트 룰 적용 (채점 트래픽 시작 직후 실행)
-- **실행**: `python update_waf.py`
-- **소요시간**: 90초 (헤더 수집) + WAF 전파 ~30초
+**파드 교체 (30초 윈도우):**
+| 앱 | 트리거 |
+|---|---|
+| user/product | 평균 ≥ 0.4초 OR 5xx ≥ 10개 |
+| stress | 평균 ≥ 2.0초 OR 5xx ≥ 10개 |
 
-### dashboard.py
-- **위치**: `tools/dashboard.py`
-- **용도**: ALB/RDS/WAF/HPA/Karpenter 종합 모니터링
-- **실행**: `python dashboard.py` → http://localhost:9090
-
-### podlog.py
-- **위치**: `tools/podlog.py`
-- **용도**: 파드별 실시간 로그 + SLO/SLI 대시보드 (터미널 UI)
-- **실행**: `python podlog.py`
+**adaptive HPA util 조정 (60초 주기):**
+- p95 > SLO (user/product 0.2초, stress 1.0초) → util -5%
+- p95 < SLO × 80% → util +5%
+- 안정 3회 연속 → 수렴 완료 (트래픽 패턴 바뀌면 재조정)
+- util 범위: user/product 40~85%, stress 30~70%
 
 ---
 
@@ -184,24 +154,18 @@ python podlog.py
 ```bash
 cd test/load
 k6 run -e BASE_URL=<endpoint> k6.js
-
-# 30분 시나리오:
-# 1회차 (0~15분): 완만한 패턴 (최대 150 VU)
-# 2회차 (15~30분): 공격적 패턴 (최대 250 VU, 스파이크 포함)
-# + 비정상 트래픽 28분간 상시 (WAF 우회 시도)
 ```
 
 ---
 
-## 주요 변수
+## 주요 변수 (terraform.tfvars)
 
-| 변수 | 기본값 | 설명 |
-|---|---|---|
-| `node_instance_type` | - | EKS 노드 타입 (필수) |
-| `db_instance_class` | - | RDS 인스턴스 타입 (필수) |
-| `db_allocated_storage` | - | RDS 스토리지 GB (필수) |
-| `node_desired_size` | 1 | MNG 초기 노드 수 |
-| `node_max_size` | 4 | MNG 최대 노드 수 |
+| 변수 | 설명 |
+|---|---|
+| `node_instance_type` | EKS 노드 타입 (필수) |
+| `db_instance_class` | RDS 인스턴스 타입 (필수) |
+| `db_allocated_storage` | RDS 스토리지 GB (필수) |
+| `node_max_size` | MNG 최대 노드 수 (기본 4) |
 
 ---
 
@@ -209,31 +173,24 @@ k6 run -e BASE_URL=<endpoint> k6.js
 
 **카펜터 노드가 안 사라질 때**
 ```bash
-# 카펜터 노드에 남은 파드 확인
-kubectl get pods -A --field-selector spec.nodeName=<카펜터노드명>
-
-# cordon → drain
-kubectl cordon <노드명>
-kubectl drain <노드명> --ignore-daemonsets --delete-emptydir-data --grace-period=30
+kubectl get pods -A --field-selector spec.nodeName=<노드명>
+# 파드 있으면: scaler.py가 30초 내 정리
+# 안되면 수동: kubectl cordon + kubectl drain --ignore-daemonsets --force
 ```
 
-**HPA가 스케일 안 될 때**
+**HPA 스케일 안 될 때**
 ```bash
 kubectl describe hpa -n apdev
-# CPU util 확인, request 대비 실제 사용량 체크
 # autotune 재실행 권장
 ```
 
-**WAF 403이 계속 날 때**
+**WAF 403 지속**
 ```bash
-# BlockUnknownHeaders 룰 제거
-python -c "
-import boto3, json
-waf = boto3.client('wafv2', region_name='us-east-1')
-resp = waf.get_web_acl(Name='apdev-cf-acl', Scope='CLOUDFRONT', Id='<ID>')
-rules = [r for r in resp['WebACL']['Rules'] if r['Name'] != 'BlockUnknownHeaders']
-waf.update_web_acl(Name='apdev-cf-acl', Scope='CLOUDFRONT', Id='<ID>',
-    LockToken=resp['LockToken'], DefaultAction=resp['WebACL']['DefaultAction'],
-    VisibilityConfig=resp['WebACL']['VisibilityConfig'], Rules=rules)
-"
+# BlockUnknownHeaders 룰 제거 후 update_waf.py 재실행
+```
+
+**5xx 발생 시**
+```bash
+# scaler.py가 자동으로 문제 파드 교체
+# 대시보드에서 어떤 파드인지 확인: dashboard.py → Errors 탭
 ```

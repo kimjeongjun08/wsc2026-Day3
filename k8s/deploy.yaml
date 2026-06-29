@@ -28,7 +28,7 @@ spec:
               app: user
       containers:
         - name: user
-          image: 003150130236.dkr.ecr.ap-northeast-2.amazonaws.com/apdev-user:latest
+          image: ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/PROJECT-user:latest
           ports:
             - containerPort: 8080
           envFrom:
@@ -88,7 +88,7 @@ spec:
               app: product
       containers:
         - name: product
-          image: 003150130236.dkr.ecr.ap-northeast-2.amazonaws.com/apdev-product:latest
+          image: ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/PROJECT-product:latest
           ports:
             - containerPort: 8080
           envFrom:
@@ -148,7 +148,7 @@ spec:
               app: stress
       containers:
         - name: stress
-          image: 003150130236.dkr.ecr.ap-northeast-2.amazonaws.com/apdev-stress:latest
+          image: ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/PROJECT-stress:latest
           ports:
             - containerPort: 8080
           envFrom:

@@ -142,7 +142,7 @@ def calculate(node_type, max_nodes, measured=None):
     total_capacity = available_1node * max_nodes
     u_max = max(4, int(total_capacity * 0.7 // u_req))
     p_max = max(4, int(total_capacity * 0.7 // p_req))
-    s_max = max(4, int(total_capacity * 0.7 // s_req))
+    s_max = max(4, int(total_capacity * 0.9 // s_req))
     # 상한 캡: 노드 너무 많이 생기지 않게
     u_max = min(u_max, 20)
     p_max = min(p_max, 20)
@@ -203,7 +203,7 @@ def apply_all(config, node_type):
         hpa = json.dumps({"spec": {"minReplicas": 1, "maxReplicas": c[app]["max"],
             "behavior": {
                 "scaleUp": {"stabilizationWindowSeconds": 0, "policies": [{"type": "Pods", "value": 3, "periodSeconds": 15}], "selectPolicy": "Max"},
-                "scaleDown": {"stabilizationWindowSeconds": 60, "policies": [{"type": "Percent", "value": 50, "periodSeconds": 15}], "selectPolicy": "Max"}
+                "scaleDown": {"stabilizationWindowSeconds": 30, "policies": [{"type": "Percent", "value": 100, "periodSeconds": 15}], "selectPolicy": "Max"}
             },
             "metrics": [{"type": "Resource", "resource": {"name": "cpu", "target": {"type": "Utilization", "averageUtilization": c[app]["util"]}}}]
         }}).replace('"', '\\"')
@@ -213,13 +213,13 @@ def apply_all(config, node_type):
     s = c["stress"]
     patch = json.dumps({"spec": {"template": {"spec": {"containers": [{"name": "stress", "resources": {
         "requests": {"cpu": s["req"], "memory": "128Mi"},
-        "limits": {"memory": "512Mi"}
+        "limits": {"cpu": f"{NODE_CPU.get(node_type, 1800) * 50 // 100}m", "memory": "512Mi"}
     }}]}}}}).replace('"', '\\"')
     kubectl(f'-n {NAMESPACE} patch deploy/stress --type=strategic -p "{patch}"')
-    hpa = json.dumps({"spec": {"minReplicas": s.get("min", 1), "maxReplicas": s["max"],
+    hpa = json.dumps({"spec": {"minReplicas": s.get("min", 2), "maxReplicas": s["max"],
         "behavior": {
             "scaleUp": {"stabilizationWindowSeconds": 0, "policies": [{"type": "Pods", "value": s["scaleup"], "periodSeconds": 15}], "selectPolicy": "Max"},
-            "scaleDown": {"stabilizationWindowSeconds": 60, "policies": [{"type": "Percent", "value": 50, "periodSeconds": 15}], "selectPolicy": "Max"}
+            "scaleDown": {"stabilizationWindowSeconds": 30, "policies": [{"type": "Percent", "value": 100, "periodSeconds": 15}], "selectPolicy": "Max"}
         },
         "metrics": [{"type": "Resource", "resource": {"name": "cpu", "target": {"type": "Utilization", "averageUtilization": s["util"]}}}]
     }}).replace('"', '\\"')
@@ -305,8 +305,10 @@ def print_results(results):
             all_30 = False
             continue
         total = len(data)
-        avail = len([1 for s, t in data if 200 <= s < 300]) / total * 100
-        perf  = len([1 for s, t in data if 200 <= s < 300 and t <= slo_ms[api]]) / total * 100
+        valid = [(s,t) for s,t in data if s != 0]  # 연결실패 제외
+        total_v = len(valid) if valid else 1
+        avail = len([1 for s, t in valid if 200 <= s < 300]) / total_v * 100
+        perf  = len([1 for s, t in valid if 200 <= s < 300 and t <= slo_ms[api]]) / total_v * 100
         times = sorted(t for _, t in data)
         avg = sum(times) / len(times)
         p95 = times[int(len(times) * 0.95)]
@@ -363,6 +365,11 @@ async def main():
 
     confirm = input(f"\n적용 + 검증? (y/n): ").strip().lower()
     if confirm != "y": print("취소"); return
+
+    # 적용 전 카펜터 노드 cordon (rolling update 시 새 파드가 MNG에만 뜨도록)
+    _, kp_out = kubectl("get nodes -l karpenter.sh/nodepool --no-headers -o custom-columns=NAME:.metadata.name")
+    for kn in [n.strip() for n in kp_out.split("\n") if n.strip()]:
+        kubectl(f"cordon {kn}")
 
     # 적용
     print("\n적용 중...")
@@ -428,42 +435,49 @@ async def main():
                 print(f"\n✗ 재튜닝 {attempt}회 실패. {'다시 시도...' if attempt < 3 else '최대 시도 횟수 초과.'}")
                 config = retry_config
 
-    # 안정화: 검증 부하 제거 후 카펜터 노드 drain → MNG 1대로 수렴
-    print("\n안정화 중 (카펜터 노드 drain → MNG 수렴)...")
-    await asyncio.sleep(10)
+    # 안정화: rolling update 완료 + 카펜터 노드 정리 → MNG 1대로 수렴
+    print("\n안정화 중...")
 
-    # 카펜터가 만든 노드 목록 (label: karpenter.sh/nodepool)
+    # rolling update 완료 대기
+    for app in ["user", "product", "stress"]:
+        kubectl(f"-n {NAMESPACE} rollout status deploy/{app} --timeout=180s")
+
+    # 카펜터 노드 정리: cordon → rollout restart(MNG에만 뜸) → drain
+    await asyncio.sleep(10)
     _, karpenter_nodes_out = kubectl("get nodes -l karpenter.sh/nodepool --no-headers -o custom-columns=NAME:.metadata.name")
     karpenter_nodes = [n.strip() for n in karpenter_nodes_out.split("\n") if n.strip()]
 
     if karpenter_nodes:
-        # 1) 먼저 카펜터 노드를 unschedulable로 cordon → 새 파드는 MNG에만 뜸
-        print(f"  카펜터 노드 {len(karpenter_nodes)}대 cordon...")
+        print(f"  카펜터 노드 {len(karpenter_nodes)}대 정리...")
         for node in karpenter_nodes:
             kubectl(f"cordon {node}")
-
-        # 2) rollout restart → MNG에 새 파드 뜸 (stress 먼저 1개로 축소해서 MNG 공간 확보)
-        print("  파드 clean restart (MNG에 스케줄)...")
-        kubectl(f"-n {NAMESPACE} scale deploy/stress --replicas=1")
-        await asyncio.sleep(5)
+        # MNG에 새 파드 뜨도록 restart (maxUnavailable:0이라 5xx 없음)
         for app in ["user", "product", "stress"]:
             kubectl(f"-n {NAMESPACE} rollout restart deploy/{app}")
         for app in ["user", "product", "stress"]:
-            kubectl(f"-n {NAMESPACE} rollout status deploy/{app} --timeout=120s")
-
-        # 3) 이제 카펜터 노드의 구 파드 drain
-        print("  구 파드 drain...")
+            kubectl(f"-n {NAMESPACE} rollout status deploy/{app} --timeout=180s")
+        # drain
         for node in karpenter_nodes:
-            kubectl(f"drain {node} --ignore-daemonsets --delete-emptydir-data --force --timeout=60s")
+            kubectl(f"drain {node} --ignore-daemonsets --delete-emptydir-data --force --grace-period=30 --timeout=60s")
+        print("  Karpenter consolidation 대기 (30초)...")
+        await asyncio.sleep(30)
 
-        print("  Karpenter consolidation 대기 (60초)...")
-        await asyncio.sleep(60)
-    else:
-        print("  카펜터 노드 없음. 새 파드로 restart...")
+    # 최종 확인: 카펜터 노드가 아직 있으면 한 번 더 정리
+    _, leftover = kubectl("get nodes -l karpenter.sh/nodepool --no-headers -o custom-columns=NAME:.metadata.name")
+    leftover_nodes = [n.strip() for n in leftover.split("\n") if n.strip()]
+    if leftover_nodes:
+        print(f"  카펜터 노드 {len(leftover_nodes)}대 추가 정리...")
+        for node in leftover_nodes:
+            kubectl(f"cordon {node}")
         for app in ["user", "product", "stress"]:
             kubectl(f"-n {NAMESPACE} rollout restart deploy/{app}")
         for app in ["user", "product", "stress"]:
-            kubectl(f"-n {NAMESPACE} rollout status deploy/{app} --timeout=120s")
+            kubectl(f"-n {NAMESPACE} rollout status deploy/{app} --timeout=180s")
+        for node in leftover_nodes:
+            kubectl(f"drain {node} --ignore-daemonsets --delete-emptydir-data --force --grace-period=30 --timeout=60s")
+        await asyncio.sleep(30)
+    else:
+        print("  카펜터 노드 없음.")
 
     _, n = kubectl("get nodes --no-headers")
     node_count = len([l for l in n.split("\n") if l.strip()]) if n else 0

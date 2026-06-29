@@ -49,7 +49,7 @@ resource "aws_s3_object" "app_binaries" {
 
 # Upload static k8s files to S3 (setup 버킷)
 resource "aws_s3_object" "k8s_static" {
-  for_each = toset(["service.yaml", "hpa.yaml", "pdb.yaml", "alb.sh", "iam_policy.json", "install-karpenter.sh"])
+  for_each = toset(["service.yaml", "hpa.yaml", "pdb.yaml", "iam_policy.json", "install-karpenter.sh"])
   bucket   = aws_s3_bucket.setup.bucket
   key      = "k8s/${each.value}"
   source   = "${path.module}/k8s/${each.value}"
@@ -64,14 +64,11 @@ resource "aws_s3_object" "k8s_deploy" {
     replace(
       replace(
         file("${path.module}/k8s/deploy.yaml"),
-        "003150130236.dkr.ecr.ap-northeast-2.amazonaws.com/apdev-user:latest",
-        "${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.region}.amazonaws.com/${local.name}-user:latest"
+        "ACCOUNT_ID", data.aws_caller_identity.current.account_id
       ),
-      "003150130236.dkr.ecr.ap-northeast-2.amazonaws.com/apdev-product:latest",
-      "${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.region}.amazonaws.com/${local.name}-product:latest"
+      "REGION", var.region
     ),
-    "003150130236.dkr.ecr.ap-northeast-2.amazonaws.com/apdev-stress:latest",
-    "${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.region}.amazonaws.com/${local.name}-stress:latest"
+    "PROJECT", local.name
   )
 }
 
