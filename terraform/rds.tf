@@ -25,7 +25,7 @@ resource "aws_security_group" "rds" {
   }
 }
 
-# Parameter group: charset/locale/slow query만, max_connections는 AWS 기본값 사용
+# Parameter group: charset/locale/slow query + max_connections 상향 (프록시 백엔드 풀 고갈 방지)
 resource "aws_db_parameter_group" "mysql8" {
   name        = "${local.name}-mysql8"
   family      = "mysql8.0"
@@ -50,6 +50,15 @@ resource "aws_db_parameter_group" "mysql8" {
   parameter {
     name  = "long_query_time"
     value = "0.5"
+  }
+
+  # 백엔드 풀(프록시가 DB로 여는 커넥션) 상한을 인스턴스 메모리에 비례해 상향.
+  # 기본값(mem/12582880; t3.micro≈85)에 proxy 90% 적용 시 ~76 → 동시 쿼리/세션 핀에서 고갈.
+  # mem/8388608 로 약 1.5배(t3.micro≈128) 확보, 큰 인스턴스에서는 비례 증가. 동적 파라미터라 무중단 적용.
+  parameter {
+    name         = "max_connections"
+    value        = "LEAST({DBInstanceClassMemory/8388608},5000)"
+    apply_method = "immediate"
   }
 }
 

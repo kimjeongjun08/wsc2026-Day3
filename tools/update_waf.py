@@ -35,10 +35,16 @@ def collect_headers(waf, acl_arn):
     # {header_name: set(values)} 형태로 수집
     headers_map = {}
 
-    BLACKLIST = {"attack", "attacker", "hack", "hacker", "bot", "exploit",
-                 "inject", "malicious", "evil", "payload", "shell", "backdoor",
-                 "scanner", "nikto", "sqlmap", "nmap", "burp", "vector",
-                 "authorization", "x-forwarded", "x-custom", "fake", "token"}
+    # 화이트리스트에 넣지 말아야 할 헤더 '이름'(소문자, 정확 일치). 이 헤더가 들어온
+    # 요청은 차단 상태로 둔다. 기존 코드는 헤더 NAME 과 VALUE 모두에 substring 매칭을
+    # 해서, 정상 헤더의 이름/값이 우연히 토큰을 '포함'하기만 해도(예: 값에 "token"/"bot"/
+    # "vector" 포함, 이름에 "x-forwarded" 포함) 화이트리스트에서 빠지고 → 그 정상 요청이
+    # BlockUnknownHeaders 로 403(자기 DoS). 정확 이름 매칭으로 교체한다.
+    BLOCK_HEADER_NAMES = {
+        "authorization", "x-hacker", "x-attack", "x-custom", "x-evil",
+        "x-forwarded-for", "x-forwarded-host", "x-real-ip", "x-originating-ip",
+        "x-client-ip", "true-client-ip", "x-remote-ip",
+    }
 
     for metric in ["AllowValidGET", "AllowValidPOST", "AllowValidPUT"]:
         try:
@@ -51,7 +57,8 @@ def collect_headers(waf, acl_arn):
                 for h in sample["Request"].get("Headers", []):
                     name = h["Name"].lower()
                     value = h.get("Value", "")
-                    if any(kw in name.lower() or kw in value.lower() for kw in BLACKLIST):
+                    # 이름 정확 일치만으로 제외. 절대 VALUE 기준으로 제외하지 않음.
+                    if name in BLOCK_HEADER_NAMES:
                         continue
                     if name not in headers_map:
                         headers_map[name] = set()
@@ -60,8 +67,6 @@ def collect_headers(waf, acl_arn):
             pass
 
     return headers_map
-
-    return sorted(headers_set)
 
 
 def build_header_rule(allowed_headers):
@@ -131,7 +136,18 @@ def main():
                 del headers_map[h]
                 print(f"  제외됨: {h}")
 
-    allowed_headers = sorted(headers_map.keys())
+    # 표준 클라이언트/CDN 헤더는 항상 허용. 90초 샘플링 창에 안 잡힌 정상 헤더가
+    # 나중에 들어와 403 되는 자기 DoS 를 막는다(공격 헤더는 위 BLOCK_HEADER_NAMES 로 차단).
+    BASELINE_HEADERS = {
+        "host", "user-agent", "accept", "accept-encoding", "accept-language",
+        "accept-charset", "content-type", "content-length", "connection",
+        "cache-control", "pragma", "origin", "referer", "cookie", "date",
+        "upgrade-insecure-requests", "te", "dnt",
+        "sec-fetch-mode", "sec-fetch-site", "sec-fetch-dest", "sec-fetch-user",
+        "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform",
+        "via", "x-amz-cf-id", "x-amzn-trace-id", "x-forwarded-proto", "x-forwarded-port",
+    }
+    allowed_headers = sorted(set(headers_map.keys()) | BASELINE_HEADERS)
     print(f"\n최종 허용 헤더 ({len(allowed_headers)}개): {allowed_headers}")
 
     confirm = input("\n이 헤더로 화이트리스트 적용? (y/n): ").strip().lower()

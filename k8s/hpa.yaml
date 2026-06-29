@@ -1,3 +1,6 @@
+# ⚠️ 비활성/미사용 사본. 실제 배포 매니페스트는 terraform/k8s/ 이다.
+# (terraform → S3 업로드 → bastion 다운로드 → setup.sh apply). 이 디렉터리(k8s/)는
+# 어디서도 참조되지 않으므로 수정해도 효과 없음. 운영/채점 변경은 terraform/k8s/ 에서.
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:

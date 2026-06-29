@@ -52,6 +52,18 @@ def set_min_replicas(app, val):
     ok, _ = kubectl(f'-n {NAMESPACE} patch hpa/{app}-hpa --type=merge -p "{patch}"')
     return ok
 
+def hpa_max(app, _cache={}):
+    """HPA maxReplicas (캐시). floor 상향 시 상한 가드."""
+    if app in _cache:
+        return _cache[app]
+    ok, out = kubectl(f'-n {NAMESPACE} get hpa/{app}-hpa --no-headers '
+                      f'-o custom-columns=M:.spec.maxReplicas')
+    try:
+        _cache[app] = int(out.strip())
+    except Exception:
+        _cache[app] = {"user": 8, "product": 8, "stress": 50}.get(app, 8)
+    return _cache[app]
+
 def get_pods(app):
     ok, out = kubectl(f'-n {NAMESPACE} get pods -l app={app} --no-headers '
                       f'-o custom-columns=NAME:.metadata.name')
@@ -131,14 +143,19 @@ def p95(values):
 
 # ── adaptive 루프 (60초 주기) ──
 def scale_loop():
-    """30초마다: 즉각 scale (응답/5xx 감지) + 카펜터 노드 정리"""
-    # 즉각 scale 임계값 (30초 윈도우)
+    """30초마다: 응답/5xx 감지 시 HPA minReplicas(floor)만 상향 — 노드 정리는 Karpenter에 일임"""
+    # 긴급 대응 임계값 (30초 윈도우)
     SCALE_THRESHOLDS = {
         "user":    {"avg_ms": 300, "5xx": 5},
         "product": {"avg_ms": 300, "5xx": 5},
         "stress":  {"5xx": 10},  # stress는 5xx만
     }
-    last_scaled = {app: 0 for app in APPS}  # 쿨다운: 마지막 scale 시각
+    # de-conflict: Deployment.spec.replicas 는 HPA 가 단독 소유한다. 긴급 시에도
+    # kubectl scale(절대값)을 쓰면 HPA 와 두 컨트롤러가 같은 필드를 두고 충돌(replicas 핑퐁)
+    # 하므로 금지하고, HPA 의 minReplicas(=floor)만 끌어올려 HPA 가 그 위에서 스케일하게 한다.
+    BASELINE_MIN = {"user": 1, "product": 1, "stress": 2}  # hpa.yaml 의 minReplicas 와 동일
+    floor_min    = dict(BASELINE_MIN)                       # 현재 적용 중인 floor
+    last_breach  = {app: 0.0 for app in APPS}               # 마지막 임계 초과 시각
 
     time.sleep(30)
 
@@ -151,13 +168,9 @@ def scale_loop():
                 if app:
                     app_data[app].extend([e for e in entries if e[0] >= cutoff])
 
-        # 즉각 scale: 임계값 초과 시 replicas +2
         for app in APPS:
             data = app_data[app]
             if not data:
-                continue
-            # 쿨다운 60초
-            if time.time() - last_scaled[app] < 30:
                 continue
 
             avg_ms  = sum(d[1] for d in data) / len(data)
@@ -169,35 +182,26 @@ def scale_loop():
                 breach = breach or avg_ms >= thr["avg_ms"]
 
             if breach:
+                last_breach[app] = time.time()
                 with _lock:
-                    cur = _state["replicas"].get(app, 1)
-                add = 5 if app == "stress" else 2
-                new_replicas = cur + add
-                ok, _ = kubectl(f"-n {NAMESPACE} scale deploy/{app} --replicas={new_replicas}")
-                if ok:
-                    last_scaled[app] = time.time()
-                    log_event(f"⚡ {app} scale {cur}→{new_replicas} (avg={avg_ms:.0f}ms 5xx={cnt_5xx})")
+                    cur = _state["replicas"].get(app, BASELINE_MIN[app])
+                add = 3 if app == "stress" else 1
+                new_min = min(max(cur, floor_min[app]) + add, hpa_max(app))
+                if new_min > floor_min[app]:
+                    floor_min[app] = new_min
+                    if set_min_replicas(app, new_min):
+                        log_event(f"⚡ {app} min→{new_min} (avg={avg_ms:.0f}ms 5xx={cnt_5xx})")
+            # 안정 회복: 90초간 임계 미초과면 floor 를 한 칸씩 내려 HPA scaleDown 을 허용
+            elif floor_min[app] > BASELINE_MIN[app] and time.time() - last_breach[app] > 90:
+                floor_min[app] -= 1
+                if set_min_replicas(app, floor_min[app]):
+                    log_event(f"↓ {app} min→{floor_min[app]} (안정 회복)")
 
-        # 카펜터 노드 정리
-        ok, karp_out = kubectl("get nodes -l karpenter.sh/nodepool --no-headers "
-                               "-o custom-columns=NAME:.metadata.name,SCHED:.spec.unschedulable")
-        if ok and karp_out:
-            for line in karp_out.splitlines():
-                parts = line.split()
-                if not parts: continue
-                knode = parts[0]
-                if len(parts) > 1 and parts[1] == "true":
-                    continue
-                ok2, pods_out = kubectl(f"-n {NAMESPACE} get pods --field-selector spec.nodeName={knode} "
-                                        f"--no-headers -o custom-columns=NAME:.metadata.name")
-                if not ok2 or not pods_out or not pods_out.strip():
-                    continue
-                apdev_pods = [p.strip() for p in pods_out.splitlines() if p.strip()]
-                if 0 < len(apdev_pods) <= 2:
-                    kubectl(f"cordon {knode}")
-                    for p in apdev_pods:
-                        kubectl(f"-n {NAMESPACE} delete pod {p} --grace-period=10")
-                    log_event(f"🔄 {knode.split('.')[0]} 파드→MNG ({len(apdev_pods)}개)")
+        # 노드 정리는 Karpenter consolidation(NodePool.disruption)에 일임한다.
+        # scaler 가 카펜터 노드를 cordon/delete 하면 (1) HPA 스케일업으로 갓 띄운 파드를
+        # 다시 쫓아내 Pending 을 유발하고 (2) Karpenter 프로비저닝과 핑퐁(노드 churn)하며
+        # (3) 단일 replica + PDB 면 eviction 이 막혀 노드가 cordon 된 채 남는다.
+        # → 채점 중 가용성/성능을 떨어뜨리므로 제거. floor 보조(위)만 유지.
 
         time.sleep(30)
 

@@ -1,4 +1,4 @@
-FROM golang:alpine
+FROM alpine:3.20
 COPY user app
-RUN chmod +x app && apk add --no-cache curl libc6-compat
+RUN chmod +x app && apk add --no-cache curl libc6-compat ca-certificates
 CMD ["./app"]

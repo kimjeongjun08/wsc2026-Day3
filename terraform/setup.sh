@@ -53,9 +53,9 @@ for APP in user product stress; do
   cp /home/ec2-user/application/$APP/$APP /home/ec2-user/build-$APP/app
 
   cat > /home/ec2-user/build-$APP/Dockerfile <<'EOF'
-FROM golang:alpine
+FROM alpine:3.20
 COPY app app
-RUN chmod +x app && apk add --no-cache curl libc6-compat
+RUN chmod +x app && apk add --no-cache curl libc6-compat ca-certificates
 CMD ["./app"]
 EOF
 

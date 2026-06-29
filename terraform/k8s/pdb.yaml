@@ -4,7 +4,7 @@ metadata:
   name: user-pdb
   namespace: apdev
 spec:
-  minAvailable: 1
+  maxUnavailable: 1
   selector:
     matchLabels:
       app: user
@@ -15,7 +15,7 @@ metadata:
   name: product-pdb
   namespace: apdev
 spec:
-  minAvailable: 1
+  maxUnavailable: 1
   selector:
     matchLabels:
       app: product
@@ -26,7 +26,7 @@ metadata:
   name: stress-pdb
   namespace: apdev
 spec:
-  minAvailable: 1
+  maxUnavailable: 1
   selector:
     matchLabels:
       app: stress

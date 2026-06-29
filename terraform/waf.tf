@@ -91,18 +91,6 @@ resource "aws_wafv2_web_acl" "cloudfront" {
                     }
                   }
                 }
-                statement {
-                  regex_match_statement {
-                    regex_string = "^[^&]*&[^&]*&[^&]*$"
-                    field_to_match {
-                      query_string {}
-                    }
-                    text_transformation {
-                      priority = 0
-                      type     = "NONE"
-                    }
-                  }
-                }
               }
             }
             # GET /v1/product?id=...&requestid=숫자&uuid=UUIDv4
@@ -156,18 +144,6 @@ resource "aws_wafv2_web_acl" "cloudfront" {
                       single_query_argument {
                         name = "uuid"
                       }
-                    }
-                    text_transformation {
-                      priority = 0
-                      type     = "NONE"
-                    }
-                  }
-                }
-                statement {
-                  regex_match_statement {
-                    regex_string = "^[^&]*&[^&]*&[^&]*$"
-                    field_to_match {
-                      query_string {}
                     }
                     text_transformation {
                       priority = 0
