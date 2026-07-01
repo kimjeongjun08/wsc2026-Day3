@@ -126,8 +126,11 @@ python podlog.py       # 터미널 UI (로그 + WAF + 파드 상태)
 |---|---|---|
 | `preflight.py` | 인프라+API+WAF 전체 헬스체크 | setup 완료 후, autotune 전 |
 | `autotune.py` | HPA/Karpenter 최적값 계산+적용 | 준비 시간 (1회) |
+| `prewarm.py` | 트래픽 직전 사전 스케일(콜드스타트 방지), `--reset` 복귀 | 트래픽 시작 3~5분 전 |
 | `update_waf.py` | WAF 헤더 화이트리스트 적용 | 채점 트래픽 시작 직후 (1회) |
-| `scaler.py` | 파드 교체 + adaptive util + 노드 정리 | 채점 2시간 내내 |
+| `scaler.py` | HPA floor(minReplicas) 보조 + adaptive util (노드정리는 Karpenter에 일임) | 채점 2시간 내내 |
+| `wafcheck.py` | WAF 로그 분석 → 정상 트래픽 오차단(자기-403) 감지 | 트래픽 중 수시 |
+| `costcheck.py` | 실행 인스턴스 실측 → cost ratio 추정/노드 절감 판단 | 트래픽 중 수시 |
 | `dashboard.py` | 웹 대시보드 (ALB/RDS/WAF/HPA) | 선택 |
 | `podlog.py` | 터미널 UI (로그+WAF+파드 상태) | 선택 |
 
