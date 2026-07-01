@@ -557,6 +557,98 @@ resource "aws_wafv2_web_acl" "cloudfront" {
     }
   }
 
+  # Rule 4: 제공하지 않는 경로(예: /v1/none, /foo)는 WAF 를 통과시켜 ALB 로 넘긴다.
+  # 그러면 ALB listener 규칙(/v1/user* · /v1/product* · /v1/stress*)에 안 걸려
+  # ALB default_action(fixed-response 404)이 응답한다 → 과제 요구: 미제공 API = 404.
+  # 제공 경로(user/product/stress/images/healthcheck)로의 요청은 이 규칙에 매칭되지 않아
+  # (NOT 조건이 false) 통과하지 못하고, 유효하면 Rule1~3(allow), 비정상이면
+  # default_action(block)=403 으로 처리된다 → 비정상 요청 = 403 유지.
+  rule {
+    name     = "AllowNonApiPaths"
+    priority = 4
+    action {
+      allow {}
+    }
+    statement {
+      not_statement {
+        statement {
+          or_statement {
+            statement {
+              byte_match_statement {
+                search_string         = "/v1/user"
+                field_to_match {
+                  uri_path {}
+                }
+                positional_constraint = "EXACTLY"
+                text_transformation {
+                  priority = 0
+                  type     = "NONE"
+                }
+              }
+            }
+            statement {
+              byte_match_statement {
+                search_string         = "/v1/product"
+                field_to_match {
+                  uri_path {}
+                }
+                positional_constraint = "EXACTLY"
+                text_transformation {
+                  priority = 0
+                  type     = "NONE"
+                }
+              }
+            }
+            statement {
+              byte_match_statement {
+                search_string         = "/v1/stress"
+                field_to_match {
+                  uri_path {}
+                }
+                positional_constraint = "EXACTLY"
+                text_transformation {
+                  priority = 0
+                  type     = "NONE"
+                }
+              }
+            }
+            statement {
+              byte_match_statement {
+                search_string         = "/healthcheck"
+                field_to_match {
+                  uri_path {}
+                }
+                positional_constraint = "EXACTLY"
+                text_transformation {
+                  priority = 0
+                  type     = "NONE"
+                }
+              }
+            }
+            statement {
+              byte_match_statement {
+                search_string         = "/images/"
+                field_to_match {
+                  uri_path {}
+                }
+                positional_constraint = "STARTS_WITH"
+                text_transformation {
+                  priority = 0
+                  type     = "NONE"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    visibility_config {
+      sampled_requests_enabled   = true
+      cloudwatch_metrics_enabled = true
+      metric_name                = "AllowNonApiPaths"
+    }
+  }
+
   visibility_config {
     sampled_requests_enabled   = true
     cloudwatch_metrics_enabled = true
