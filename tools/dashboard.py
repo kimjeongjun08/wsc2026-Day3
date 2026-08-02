@@ -1,4 +1,4 @@
-import subprocess, json, sys, time, threading, gzip, shlex
+import subprocess, json, sys, time, threading
 from datetime import datetime, timedelta
 from collections import deque
 from flask import Flask, jsonify, render_template, request
@@ -8,7 +8,6 @@ REGION = "ap-northeast-2"
 WAF_REGION = "us-east-1"          # CloudFront WAF는 us-east-1
 NS = "apdev"
 WAF_LOG_GROUP = "aws-waf-logs-apdev"
-ALB_LOG_BUCKET = ""  # auto_detect()에서 채워짐 (terraform output alb_logs_bucket)
 config = {"lb_arn": "", "user_tg": "", "product_tg": "", "stress_tg": "", "rds_id": "apdev-rds-instance", "webacl": "apdev-cf-acl", "account": ""}
 history = deque(maxlen=480)
 
@@ -153,6 +152,94 @@ def api_traffic():
     elif ratio < 0.8: overall = "COOLING"
     else: overall = "STEADY"
 
+    # 스파이크 주기 예측: SPIKE 패턴 간 간격 분석
+    prediction = None
+    # 전체 트래픽 기반 패턴 분석 (앱별 데이터 없어도 동작)
+    all_reqs = [h.get("alb_req", 0) for h in hist]
+    if len(all_reqs) >= 6:
+        # 스파이크 감지: 전체 평균 대비 2배 이상인 세그먼트
+        seg_size = 20
+        overall_avg = sum(all_reqs) / len(all_reqs) if all_reqs else 1
+        spike_segs = []
+        for i in range(0, len(all_reqs), seg_size):
+            seg = all_reqs[i:i+seg_size]
+            if not seg: continue
+            seg_avg = sum(seg) / len(seg)
+            peak = max(seg)
+            std = (sum((x-seg_avg)**2 for x in seg)/len(seg))**0.5
+            # Phase Analysis와 동일 기준
+            if (std > seg_avg * 0.5 and peak > seg_avg * 2) or (peak > overall_avg * 2):
+                spike_segs.append(i)
+
+        if len(spike_segs) >= 2:
+            intervals = [spike_segs[j+1] - spike_segs[j] for j in range(len(spike_segs)-1)]
+            avg_interval = sum(intervals) / len(intervals)
+            since_last = (len(all_reqs) // max(seg_size, 1)) - spike_segs[-1] // max(seg_size, 1)
+            next_in = max(0, avg_interval - since_last)
+            next_min = round(next_in * 5 / 4, 0)  # 샘플 15초 기준
+            # 최근 스파이크 peak 사용 (과거 대형 스파이크가 아닌 직전 스파이크 기준)
+            recent_spike_idx = spike_segs[-1] if spike_segs else 0
+            recent_seg = all_reqs[recent_spike_idx:recent_spike_idx+seg_size]
+            spike_peak = max(recent_seg) if recent_seg else max(all_reqs[i] for i in spike_segs if i < len(all_reqs))
+
+            # 전체 앱에 대한 권장
+            app_predictions = {}
+            # 앱별 트래픽 비율 추정 (최근 데이터 기반)
+            app_ratios = {"user": 0.3, "product": 0.4, "stress": 0.3}  # 기본값
+            if hist:
+                latest = hist[-1]
+                total_recent = latest.get("alb_req", 0)
+                if total_recent > 0:
+                    for app_name in ["user", "product", "stress"]:
+                        app_req = latest.get(f"{app_name}_req", 0)
+                        if app_req > 0:
+                            app_ratios[app_name] = app_req / total_recent
+
+            for app_name in ["user", "product", "stress"]:
+                try:
+                    hr = subprocess.run(["kubectl", "get", f"hpa/{app_name}-hpa", "-n", NS, "-o", "json"],
+                                       capture_output=True, text=True, timeout=5)
+                    hi = json.loads(hr.stdout)
+                    cur_rep = hi.get("status", {}).get("currentReplicas", 1)
+                    max_rep = hi.get("spec", {}).get("maxReplicas", 20)
+                except Exception:
+                    cur_rep, max_rep = 1, 20
+
+                # 앱별 예상 peak = 전체 peak × 앱 비율
+                app_peak = spike_peak * app_ratios.get(app_name, 0.33)
+
+                # 파드당 처리량 추정 (stress=CPU heavy, user/product=I/O bound)
+                rps_per_pod = 3 if app_name == "stress" else 30
+                current_capacity = cur_rep * rps_per_pod
+
+                # 선제 대응 필요 여부: 앱별 예상 peak가 현재 용량의 2배 초과
+                needs_prescale = app_peak > current_capacity * 2
+
+                if needs_prescale:
+                    needed = int(app_peak / rps_per_pod) + 1
+                    recommended = min(max_rep, needed)
+                else:
+                    recommended = cur_rep
+
+                app_predictions[app_name] = {
+                    "next_spike_min": next_min,
+                    "avg_interval_min": round(avg_interval * 5 / 4, 0),
+                    "spike_count": len(spike_segs),
+                    "spike_peak_rps": round(app_peak),
+                    "recommended": recommended,
+                    "current": cur_rep,
+                    "max": max_rep,
+                    "needs_prescale": needs_prescale,
+                    "current_capacity": round(current_capacity),
+                }
+            # 선제 대응 필요한 앱만 자동 실행 + 모든 앱 표시 (수동 대응용)
+            traffic_dur = config.get("traffic_duration_min", 120)
+            # 자동 실행 대상: needs_prescale=True + 시간 내
+            # 표시 대상: 전부 (수동 버튼으로 언제든 실행 가능)
+            app_predictions = {k:v for k,v in app_predictions.items()
+                              if v["next_spike_min"] <= traffic_dur}
+            if app_predictions:
+                prediction = app_predictions
     return jsonify({
         "overall_pattern": overall,
         "current": totals[-1] if totals else 0,
@@ -162,7 +249,8 @@ def api_traffic():
         "trend_pct": round((ratio-1)*100, 1),
         "duration_min": round(len(totals)*15/60, 1),
         "samples": len(totals),
-        "phases": phases
+        "phases": phases,
+        "prediction": prediction
     })
 
 @app.route("/api/pods")
@@ -170,22 +258,154 @@ def api_pods():
     try:
         r = subprocess.run(["kubectl", "get", "pods", "-n", NS, "-o", "json"], capture_output=True, text=True, timeout=5)
         pods = json.loads(r.stdout).get("items", [])
+        # kubectl top으로 CPU/메모리
+        r2 = subprocess.run(["kubectl", "top", "pods", "-n", NS, "--no-headers"], capture_output=True, text=True, timeout=5)
+        top_map = {}
+        if r2.returncode == 0:
+            for line in r2.stdout.strip().split("\n"):
+                parts = line.split()
+                if len(parts) >= 3:
+                    top_map[parts[0]] = {"cpu": parts[1], "memory": parts[2]}
         out = []
         for p in pods:
             cs = (p["status"].get("containerStatuses") or [{}])[0]
-            # restart cause: current waiting reason (CrashLoopBackOff) or last termination (OOMKilled/Error)
             reason = "-"
             w = cs.get("state", {}).get("waiting")
             if w and w.get("reason"): reason = w["reason"]
             else:
                 lt = cs.get("lastState", {}).get("terminated")
                 if lt and lt.get("reason"): reason = lt["reason"]
-            out.append({"name": p["metadata"]["name"], "app": p["metadata"].get("labels", {}).get("app", "?"),
+            name = p["metadata"]["name"]
+            # age 계산
+            created = p["metadata"].get("creationTimestamp", "")
+            age_str = ""
+            if created:
+                try:
+                    from datetime import timezone
+                    ct = datetime.fromisoformat(created.replace("Z", "+00:00"))
+                    delta = datetime.now(timezone.utc) - ct
+                    mins = int(delta.total_seconds() // 60)
+                    if mins < 60:
+                        age_str = f"{mins}m"
+                    else:
+                        age_str = f"{mins//60}h{mins%60}m"
+                except:
+                    age_str = "?"
+            top = top_map.get(name, {"cpu": "-", "memory": "-"})
+            out.append({"name": name, "app": p["metadata"].get("labels", {}).get("app", "?"),
                         "status": p["status"]["phase"],
                         "restarts": cs.get("restartCount", 0),
-                        "reason": reason})
+                        "reason": reason,
+                        "age": age_str,
+                        "cpu": top["cpu"],
+                        "memory": top["memory"],
+                        "node": p["spec"].get("nodeName", "-")})
         return jsonify(out)
     except: return jsonify([])
+
+
+@app.route("/api/pod/delete/<path:pod_name>", methods=["POST"])
+def api_pod_delete(pod_name):
+    """파드 삭제 (grace-period 10초)"""
+    r = subprocess.run(["kubectl", "delete", "pod", pod_name, "-n", NS, "--grace-period=10"],
+                       capture_output=True, text=True, timeout=20)
+    return jsonify({"ok": r.returncode == 0, "msg": (r.stdout + r.stderr).strip()[:100]})
+
+
+@app.route("/api/hpa/patch/<app_name>", methods=["POST"])
+def api_hpa_patch(app_name):
+    """HPA minReplicas/maxReplicas 조정"""
+    data = request.get_json()
+    patch = {}
+    if "min" in data: patch["minReplicas"] = int(data["min"])
+    if "max" in data: patch["maxReplicas"] = int(data["max"])
+    if not patch:
+        return jsonify({"ok": False, "msg": "min 또는 max 필요"})
+    p = json.dumps({"spec": patch}).replace('"', '\\"')
+    r = subprocess.run(f'kubectl -n {NS} patch hpa/{app_name}-hpa --type=merge -p "{p}"',
+                       shell=True, capture_output=True, text=True, timeout=10)
+    return jsonify({"ok": r.returncode == 0, "msg": (r.stdout + r.stderr).strip()[:100]})
+
+
+@app.route("/api/rollout/<app_name>", methods=["POST"])
+def api_rollout(app_name):
+    """Deployment rollout restart"""
+    r = subprocess.run(["kubectl", "rollout", "restart", f"deploy/{app_name}", "-n", NS],
+                       capture_output=True, text=True, timeout=10)
+    return jsonify({"ok": r.returncode == 0, "msg": (r.stdout + r.stderr).strip()[:100]})
+
+
+@app.route("/api/deploy/resources")
+def api_deploy_resources():
+    """각 Deployment의 현재 request/limit"""
+    out = []
+    for app_name in ["user", "product", "stress"]:
+        try:
+            r = subprocess.run(["kubectl", "get", "deploy", app_name, "-n", NS, "-o",
+                               "jsonpath={.spec.template.spec.containers[0].resources}"],
+                              capture_output=True, text=True, timeout=5)
+            res = json.loads(r.stdout) if r.stdout else {}
+            out.append({"app": app_name, "requests": res.get("requests", {}), "limits": res.get("limits", {})})
+        except:
+            out.append({"app": app_name, "requests": {}, "limits": {}})
+    return jsonify(out)
+
+
+@app.route("/api/error-logs")
+
+@app.route("/api/app-traffic")
+def api_app_traffic():
+    """앱별 RPS + 스파이크 감지 현황"""
+    hist = list(history)
+    if len(hist) < 3:
+        return jsonify({"status": "collecting"})
+    result = {}
+    for app in ["user", "product", "stress"]:
+        reqs = [h.get(f"{app}_req", 0) for h in hist]
+        if not reqs:
+            result[app] = {"current_rps": 0, "avg_rps": 0, "peak_rps": 0, "spike_count": 0}
+            continue
+        avg = sum(reqs) / len(reqs)
+        peak = max(reqs)
+        current = reqs[-1] if reqs else 0
+        # 스파이크 감지 (평균 2배 이상)
+        spikes = sum(1 for r in reqs if r > avg * 2 and avg > 0)
+        result[app] = {
+            "current_rps": round(current),
+            "avg_rps": round(avg, 1),
+            "peak_rps": round(peak),
+            "spike_count": spikes,
+            "trend": "↑" if len(reqs) >= 2 and reqs[-1] > reqs[-2] * 1.3 else
+                     "↓" if len(reqs) >= 2 and reqs[-1] < reqs[-2] * 0.7 else "→"
+        }
+    return jsonify(result)
+
+
+def api_error_logs():
+    """파드 에러 로그 (5xx + 레이턴시 초과)"""
+    SLO = {"user": 200, "product": 200, "stress": 1000}
+    errors = []
+    for app_name in ["user", "product", "stress"]:
+        try:
+            r = subprocess.run(["kubectl", "logs", "-n", NS, "-l", f"app={app_name}",
+                               "--since=60s", "--tail=100"],
+                              capture_output=True, text=True, timeout=5)
+            for line in r.stdout.splitlines():
+                if "/healthcheck" in line:
+                    continue
+                if '"status":5' in line or '"err"' in line:
+                    errors.append({"app": app_name, "type": "5xx", "line": line.strip()[:200]})
+                elif '"dur_ms"' in line:
+                    try:
+                        d = json.loads(line[line.find('{'):])
+                        dur = d.get("dur_ms", 0)
+                        if dur > SLO[app_name]:
+                            errors.append({"app": app_name, "type": f"slow({dur}ms)", "line": line.strip()[:200]})
+                    except:
+                        pass
+        except:
+            pass
+    return jsonify(errors[-50:])
 
 @app.route("/api/nodes")
 def api_nodes():
@@ -268,7 +488,7 @@ def api_waf():
     wacl = config["webacl"]
     # per-rule blocked counts (last 5min window)
     # BlockUnknownHeaders는 update_waf.py 실행 후 생성됨 → 없으면 0
-    rules = ["BlockUnknownHeaders", "AllowValidGET", "AllowValidPOST", "AllowValidPUT"]
+    rules = ["BlockUnknownHeaders", "AllowValidGET", "AllowValidPOST", "AllowValidPUT", "BlockUnknownPath"]
     per_rule = []
     for rl in rules:
         c = cw_get("AWS/WAFV2", "BlockedRequests",
@@ -296,89 +516,6 @@ def api_waf():
         "top_rules": [{"rule": r.get("terminatingRuleId", "?"), "cnt": int(r.get("cnt", 0))} for r in top_rules],
         "total_stats": total_stats[0] if total_stats else {},
     })
-
-def _account():
-    if config.get("account"): return config["account"]
-    try:
-        r = subprocess.run(["aws", "sts", "get-caller-identity", "--query", "Account", "--output", "text"],
-                           capture_output=True, text=True, timeout=5)
-        config["account"] = r.stdout.strip()
-    except: pass
-    return config.get("account", "")
-
-
-def _alb_reason(elb_s, tgt_s, actions, error_reason, tgt):
-    # derive human "why" from the ALB access-log fields
-    if error_reason and error_reason != "-":
-        return error_reason
-    if elb_s == "403" and "waf" in (actions or ""):
-        return "WAF blocked"
-    if tgt_s.isdigit() and int(tgt_s) >= 500:
-        return f"backend returned {tgt_s}"
-    if tgt_s.isdigit() and int(tgt_s) >= 400:
-        return f"backend returned {tgt_s}"
-    if elb_s in ("502", "503", "504") and tgt in ("-", ""):
-        return "target unavailable / no healthy target"
-    if elb_s == "460":
-        return "client closed connection"
-    if elb_s == "463":
-        return "malformed X-Forwarded-For"
-    return f"ELB-level {elb_s}"
-
-
-@app.route("/api/alb_errors")
-def api_alb_errors():
-    acct = _account()
-    if not acct:
-        return jsonify({"errors": [], "count": 0, "note": "account unresolved"})
-    # newest objects under today's (UTC) ELB prefix; fall back to yesterday near midnight
-    keys = []
-    for d in (datetime.utcnow(), datetime.utcnow() - timedelta(days=1)):
-        pfx = f"AWSLogs/{acct}/elasticloadbalancing/{REGION}/{d.strftime('%Y/%m/%d')}/"
-        try:
-            r = subprocess.run(["aws", "s3api", "list-objects-v2", "--bucket", ALB_LOG_BUCKET,
-                                "--prefix", pfx, "--query", "sort_by(Contents,&LastModified)[-6:].Key",
-                                "--output", "json"], capture_output=True, text=True, timeout=8)
-            ks = json.loads(r.stdout) if r.stdout.strip() and r.stdout.strip() != "None" else []
-            keys.extend(ks or [])
-        except: pass
-        if keys: break
-    rows = []
-    for key in keys[-6:]:
-        try:
-            r = subprocess.run(["aws", "s3", "cp", f"s3://{ALB_LOG_BUCKET}/{key}", "-"],
-                               capture_output=True, timeout=12)
-            data = gzip.decompress(r.stdout).decode("utf-8", "replace")
-        except: continue
-        for line in data.splitlines():
-            try: f = shlex.split(line)
-            except: continue
-            if len(f) < 13: continue
-            elb_s, tgt_s = f[8], f[9]
-            err4or5 = (elb_s.isdigit() and int(elb_s) >= 400) or (tgt_s.isdigit() and int(tgt_s) >= 400)
-            if not err4or5: continue
-            req = f[12].split(" ")
-            method = req[0] if req else "-"
-            url = req[1] if len(req) > 1 else "-"
-            actions = f[22] if len(f) > 22 else "-"
-            error_reason = f[24] if len(f) > 24 else "-"
-            tgt = f[4]
-            rows.append({
-                "time": f[1],
-                "client": f[3].rsplit(":", 1)[0],
-                "method": method, "url": url[:120],
-                "elb_status": elb_s, "target_status": tgt_s,
-                "target": tgt, "actions": actions,
-                "rt": f[6],  # target_processing_time (-1 = no response)
-                "reason": _alb_reason(elb_s, tgt_s, actions, error_reason, tgt),
-            })
-    rows.sort(key=lambda x: x["time"], reverse=True)
-    # summary by status
-    by_status = {}
-    for x in rows:
-        s = x["elb_status"]
-        by_status[s] = by_status.get(s, 0) + 1
-    return jsonify({"errors": rows[:100], "count": len(rows), "by_status": by_status})
 
 @app.route("/api/top")
 def api_top():
@@ -421,9 +558,15 @@ def api_hpa():
 
 @app.route("/api/scale/<app_name>/<int:replicas>", methods=["POST"])
 def api_scale(app_name, replicas):
+    # replicas 설정 + minReplicas도 올려서 HPA가 줄이지 못하게
     r = subprocess.run(["kubectl", "scale", "deploy", app_name, "-n", NS, f"--replicas={replicas}"],
                       capture_output=True, text=True, timeout=5)
-    return jsonify({"ok": r.returncode==0, "msg": (r.stdout+r.stderr).strip()})
+    # minReplicas도 같이 올림 (HPA 충돌 방지)
+    import json as _json
+    patch = _json.dumps({"spec": {"minReplicas": replicas}}).replace('"', '\\"')
+    subprocess.run(f'kubectl -n {NS} patch hpa/{app_name}-hpa --type=merge -p "{patch}"',
+                  shell=True, capture_output=True, text=True, timeout=5)
+    return jsonify({"ok": r.returncode==0, "msg": f"{app_name} → {replicas} (min도 설정)"})
 
 @app.route("/api/autoscale/<action>", methods=["POST"])
 def api_autoscale(action):
@@ -527,17 +670,6 @@ def auto_detect():
         n = r.stdout.strip()
         if n and n != "None": config["webacl"] = n
     except: pass
-    # ALB 로그 버킷 자동 감지
-    global ALB_LOG_BUCKET
-    if not ALB_LOG_BUCKET:
-        try:
-            r = subprocess.run(["aws", "s3api", "list-buckets", "--query",
-                               "Buckets[?contains(Name,'alb-logs')].Name | [0]",
-                               "--output", "text", "--region", REGION],
-                              capture_output=True, text=True, timeout=5)
-            b = r.stdout.strip()
-            if b and b != "None": ALB_LOG_BUCKET = b
-        except: pass
 
 
 if __name__ == "__main__":
@@ -549,6 +681,7 @@ if __name__ == "__main__":
         print(f"  LB: {config['lb_arn']}")
     rds = input(f"  RDS ID [{config['rds_id']}]: ").strip()
     if rds: config["rds_id"] = rds
+    config["traffic_duration_min"] = 120  # 채점 2시간 고정
     threading.Thread(target=fetch_loop, daemon=True).start()
     print(f"\n  http://localhost:9090\n")
     app.run(host="0.0.0.0", port=9090, debug=False)

@@ -37,11 +37,14 @@ CREATE TABLE IF NOT EXISTS product (
 );
 SQL
 
-# dump 로드
+# dump 로드 (이미 데이터 있으면 스킵)
 aws s3 cp s3://$SETUP_BUCKET/load_user.dump /home/ec2-user/load_user.dump --region $REGION
-if [ -s /home/ec2-user/load_user.dump ]; then
+ROW_COUNT=$(mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASS" "$DB_NAME" -sN -e "SELECT COUNT(*) FROM user" 2>/dev/null || echo "0")
+if [ -s /home/ec2-user/load_user.dump ] && [ "$ROW_COUNT" = "0" ]; then
   mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASS" "$DB_NAME" < /home/ec2-user/load_user.dump
   echo "=== Dump loaded ==="
+else
+  echo "=== Dump skipped (already loaded: $ROW_COUNT rows) ==="
 fi
 echo "=== MySQL tables created ==="
 
@@ -69,6 +72,14 @@ aws eks update-kubeconfig --name $CLUSTER_NAME --region $REGION
 echo "Waiting for nodes..."
 until kubectl get nodes | grep -q " Ready"; do sleep 10; done
 echo "=== Nodes ready ==="
+
+# MNG 노드 인스턴스에 Name 태그 추가
+MNG_INSTANCES=$(aws ec2 describe-instances \
+  --filters "Name=tag:eks:nodegroup-name,Values=$ECR_PREFIX-ng" "Name=instance-state-name,Values=running" \
+  --query "Reservations[].Instances[].InstanceId" --output text --region $REGION)
+for IID in $MNG_INSTANCES; do
+  aws ec2 create-tags --resources $IID --tags Key=Name,Value="$ECR_PREFIX-mng-node" --region $REGION
+done
 
 # === Install AWS Load Balancer Controller ===
 eksctl utils associate-iam-oidc-provider --cluster $CLUSTER_NAME --region $REGION --approve
@@ -100,7 +111,8 @@ helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-contro
   --set serviceAccount.create=false \
   --set serviceAccount.name=aws-load-balancer-controller \
   --set region=$REGION \
-  --set vpcId=$VPC_ID
+  --set vpcId=$VPC_ID \
+  --set replicaCount=2
 
 kubectl rollout status deploy/aws-load-balancer-controller -n kube-system --timeout=120s
 echo "=== LBC installed ==="
@@ -122,6 +134,11 @@ aws cloudformation deploy \
 aws eks create-access-entry --cluster-name $CLUSTER_NAME \
   --principal-arn "arn:aws:iam::$ACCOUNT_ID:role/KarpenterNodeRole-$CLUSTER_NAME" \
   --type EC2_LINUX --region $REGION 2>/dev/null || true
+
+# Karpenter 노드에서 S3 등 접근 가능하도록 AdminAccess 추가
+aws iam attach-role-policy \
+  --role-name "KarpenterNodeRole-$CLUSTER_NAME" \
+  --policy-arn "arn:aws:iam::aws:policy/AdministratorAccess" 2>/dev/null || true
 
 eksctl create iamserviceaccount \
   --cluster $CLUSTER_NAME --region $REGION \
@@ -148,6 +165,7 @@ echo "=== Karpenter NodePool applied ==="
 
 # === Deploy applications ===
 kubectl create namespace apdev --dry-run=client -o yaml | kubectl apply -f -
+kubectl apply -f /home/ec2-user/k8s/priorityclass.yaml
 kubectl apply -f /home/ec2-user/k8s/configmap.yaml
 kubectl apply -f /home/ec2-user/k8s/deploy.yaml
 kubectl apply -f /home/ec2-user/k8s/service.yaml

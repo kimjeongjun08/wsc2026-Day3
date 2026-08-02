@@ -1,167 +1,289 @@
 """
-update_waf.py
-1. waf/ 폴더 JSON rules를 WAF ACL에 적용 (default BLOCK)
-2. 5분간 sampled requests 수집 → 헤더 화이트리스트 룰 자동 추가
+update_waf.py — '헤더 이름' 화이트리스트 (커버리지 게이팅판)
 
-사용법: python update_waf.py
+■ 개선점 (기존 3분 고정 샘플링의 문제 해결)
+  기존: 3분간 본 헤더만 화이트리스트 → 그 안에 안 온 요청조합(예: PUT /v1/product)이
+        나중에 오면 헤더가 화이트리스트에 없어 정상인데 차단됨.
+  개선: (메서드,경로) 조합별로 '봤는지'를 추적 → 기대 조합을 '다 볼 때까지' 대기 후 룰 생성.
+        · 다 보면 각 조합의 헤더가 전부 수집된 상태라 정상 안 막힘.
+        · 시간 상한(MAX_WAIT) 내 못 본 조합은 enforce 대상에서 제외 → 그 조합은 절대 안 막힘.
+        · BASE_ALLOW(표준 헤더)는 안전망으로 항상 허용.
+
+■ 왜 화이트리스트인가
+  · 비정상에 구멍이 없다(default block → 명시 허용 외 전부 차단). 블랙리스트는 새 공격 놓침.
+  · 경로/메서드/바디/공격패턴은 waf.tf가 담당. 여기선 '헤더 이름'만.
+
+■ HPA/정상 보호
+  · 헤더 '이름'만 검사(값 아님) → 정상 헤더값에 우연히 키워드 껴도 자폭 안 함.
+  · enforce는 '충분히 관측된 (메서드,경로)'에만 적용 → 관측 안 된 정상요청은 통과.
+
+사용법: python update_waf.py [--auto] [--wait 분]   (해제: python update_waf.py --remove)
 """
-import boto3
-import json
-import sys
-import time
+import boto3, json, sys, time
 from datetime import datetime, timedelta, timezone
+
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
 
 REGION = "us-east-1"
 ACL_NAME = "apdev-cf-acl"
 SCOPE = "CLOUDFRONT"
-SAMPLE_DURATION = 90  # 1분 30초
+
+SAMPLE_EVERY = 30          # 폴링 주기(초)
+MAX_WAIT = 1200            # 커버리지 최대 대기(초). 이 안에 다 안 오면 본 것만 enforce.
+
+# enforce 대상 기대 (메서드, 경로) 조합. 이게 다 관측되면 룰 확정.
+#   images/healthcheck는 헤더 다양성 커서 제외(enforce 안 함).
+EXPECTED = [
+    ("GET", "/v1/user"), ("GET", "/v1/product"),
+    ("POST", "/v1/user"), ("POST", "/v1/product"), ("POST", "/v1/stress"),
+    ("PUT", "/v1/product"),
+]
+
+# 표준/인프라 헤더 — 샘플에 없어도 항상 허용(안전망). 화이트리스트는 '차단 축소' 방향으로만 작용.
+BASE_ALLOW = {
+    "host", "user-agent", "accept", "accept-encoding", "accept-language",
+    "content-type", "content-length", "connection", "keep-alive",
+    "if-none-match", "if-modified-since", "cache-control", "pragma",
+    "range", "origin", "referer", "via", "date", "expect", "te", "upgrade-insecure-requests",
+    "x-forwarded-for", "x-forwarded-proto", "x-forwarded-port",
+    "x-amzn-trace-id", "x-amz-cf-id", "cloudfront-forwarded-proto",
+    "baggage", "x-vercel-id", "traceparent", "tracestate",
+    "x-request-id", "x-correlation-id", "x-amzn-requestid",
+}
+
+# 헤더 '이름'에 이 키워드가 들어가면 화이트리스트에서 제외(공격 마커성 헤더). 값은 검사 안 함.
+NAME_BLACKLIST = {"attack", "attacker", "hack", "hacker", "exploit", "inject", "malicious",
+                  "evil", "payload", "shell", "backdoor", "scanner", "nikto", "sqlmap",
+                  "nmap", "burp", "acunetix", "wpscan"}
 
 
 def get_acl(waf):
     acls = waf.list_web_acls(Scope=SCOPE)["WebACLs"]
     acl = next((a for a in acls if a["Name"] == ACL_NAME), None)
     if not acl:
-        print(f"ERROR: WAF ACL '{ACL_NAME}' not found")
-        sys.exit(1)
+        print(f"ERROR: WAF ACL '{ACL_NAME}' not found"); sys.exit(1)
     return acl["Id"], acl["ARN"]
 
 
-def collect_headers(waf, acl_arn):
-    print(f"\n⏳ {SAMPLE_DURATION//60}분간 헤더 수집 중... (정상 트래픽이 들어와야 합니다)")
-    time.sleep(SAMPLE_DURATION)
+def get_allow_metrics(waf, acl_id):
+    """현재 ACL의 Allow 룰 메트릭 이름(룰 이름 무관하게 동적으로)."""
+    resp = waf.get_web_acl(Name=ACL_NAME, Scope=SCOPE, Id=acl_id)
+    return [r["VisibilityConfig"]["MetricName"] for r in resp["WebACL"]["Rules"]
+            if "Allow" in r.get("Action", {}) and r.get("VisibilityConfig", {}).get("MetricName")]
 
-    now = datetime.now(timezone.utc)
-    start = now - timedelta(seconds=SAMPLE_DURATION + 60)
-    # {header_name: set(values)} 형태로 수집
-    headers_map = {}
 
-    BLACKLIST = {"attack", "attacker", "hack", "hacker", "bot", "exploit",
-                 "inject", "malicious", "evil", "payload", "shell", "backdoor",
-                 "scanner", "nikto", "sqlmap", "nmap", "burp", "vector",
-                 "authorization", "x-forwarded", "x-custom", "fake", "token"}
+def _norm_path(uri):
+    p = (uri or "").split("?")[0]
+    if p.startswith("/images/"):
+        return "/images/"
+    return p
 
-    for metric in ["AllowValidGET", "AllowValidPOST", "AllowValidPUT"]:
-        try:
-            resp = waf.get_sampled_requests(
-                WebAclArn=acl_arn, RuleMetricName=metric, Scope=SCOPE,
-                TimeWindow={"StartTime": start, "EndTime": now},
-                MaxItems=100,
-            )
-            for sample in resp.get("SampledRequests", []):
-                for h in sample["Request"].get("Headers", []):
-                    name = h["Name"].lower()
-                    value = h.get("Value", "")
-                    if any(kw in name.lower() or kw in value.lower() for kw in BLACKLIST):
+
+def collect_until_covered(waf, acl_arn, allow_metrics, max_wait):
+    """기대 (메서드,경로)를 다 볼 때까지(또는 max_wait까지) 샘플링하며 조합별 헤더 이름 수집.
+       반환: seen = {(method,path): set(header_names)}"""
+    if not allow_metrics:
+        print("⚠ ACL에 Allow 룰이 없어 샘플 대상이 없음."); return {}
+    print(f"⏳ 요청 조합 커버리지 수집 (최대 {max_wait//60}분, {SAMPLE_EVERY}초 간격)")
+    print(f"   대상 조합: {[f'{m} {p}' for m,p in EXPECTED]}")
+    seen = {}
+    start = time.time()
+    while True:
+        now = datetime.now(timezone.utc)
+        win = now - timedelta(seconds=SAMPLE_EVERY + 120)
+        for metric in allow_metrics:
+            try:
+                resp = waf.get_sampled_requests(
+                    WebAclArn=acl_arn, RuleMetricName=metric, Scope=SCOPE,
+                    TimeWindow={"StartTime": win, "EndTime": now}, MaxItems=500)
+            except Exception:
+                continue
+            for s in resp.get("SampledRequests", []):
+                req = s.get("Request", {})
+                method = (req.get("Method") or "").upper()
+                path = _norm_path(req.get("URI", ""))
+                if not method:
+                    continue
+                names = set()
+                values_by_name = {}  # {header_name: set(values)}
+                for h in req.get("Headers", []):
+                    hname = h["Name"].lower()
+                    hval = h.get("Value", "").lower()
+                    if any(kw in hname for kw in NAME_BLACKLIST):
                         continue
-                    if name not in headers_map:
-                        headers_map[name] = set()
-                    headers_map[name].add(value[:80])  # 값 80자까지만
-        except Exception:
-            pass
+                    names.add(hname)
+                    values_by_name.setdefault(hname, set()).add(hval)
+                seen.setdefault((method, path), {}).setdefault("names", set()).update(names)
+                for hname, vals in values_by_name.items():
+                    seen[(method, path)].setdefault("values", {}).setdefault(hname, set()).update(vals)
 
-    return headers_map
+        covered = [e for e in EXPECTED if e in seen]
+        missing = [e for e in EXPECTED if e not in seen]
+        elapsed = int(time.time() - start)
+        print(f"  [{elapsed:>4}s] 커버 {len(covered)}/{len(EXPECTED)} | 남은: {[f'{m} {p}' for m,p in missing] or '없음 ✅'}")
+        if not missing:
+            print("  ✅ 모든 기대 조합 관측 완료 → 룰 생성")
+            return seen
+        if elapsed >= max_wait:
+            print(f"  ⏱ 시간 상한 도달 → 관측된 {len(covered)}개 조합만 enforce, 미관측 조합은 면제(안 막음)")
+            return seen
 
-    return sorted(headers_set)
 
+def build_header_rule(enforce_pairs, allowed_headers, allowed_values):
+    """헤더 화이트리스트 룰(priority 0):
+       1) enforce_pairs 요청에서 화이트리스트에 없는 헤더 이름 → 403
+       2) 특정 헤더(user-agent 등)의 값이 수집된 화이트리스트와 불일치 → 403
+       두 조건을 OR로 묶어 하나의 룰에서 처리."""
+    combos = []
+    for (method, path) in enforce_pairs:
+        combos.append({"AndStatement": {"Statements": [
+            {"ByteMatchStatement": {"SearchString": method, "FieldToMatch": {"Method": {}},
+                                    "PositionalConstraint": "EXACTLY",
+                                    "TextTransformations": [{"Priority": 0, "Type": "NONE"}]}},
+            {"ByteMatchStatement": {"SearchString": path, "FieldToMatch": {"UriPath": {}},
+                                    "PositionalConstraint": "EXACTLY",
+                                    "TextTransformations": [{"Priority": 0, "Type": "NONE"}]}},
+        ]}})
+    scope = combos[0] if len(combos) == 1 else {"OrStatement": {"Statements": combos}}
 
-def build_header_rule(allowed_headers):
+    # 조건1: 알 수 없는 헤더 이름
+    anomaly_name = {"RegexMatchStatement": {
+        "RegexString": "^.*",
+        "FieldToMatch": {"Headers": {"MatchPattern": {"ExcludedHeaders": sorted(allowed_headers)},
+                                     "MatchScope": "KEY", "OversizeHandling": "CONTINUE"}},
+        "TextTransformations": [{"Priority": 0, "Type": "NONE"}]}}
+
+    # 조건2: 특정 헤더 값 화이트리스트 (user-agent 등)
+    # user-agent 값이 수집된 패턴과 불일치하면 차단
+    value_checks = []
+    # 값 검증 대상: user-agent (가장 중요)
+    ua_values = allowed_values.get("user-agent", set())
+    if ua_values:
+        # 수집된 UA 값들로 regex 패턴 생성 (prefix 매칭 — "curl/", "python-requests/" 등)
+        # 각 UA의 첫 단어(슬래시 전)를 prefix로 사용
+        ua_prefixes = set()
+        for v in ua_values:
+            prefix = v.split("/")[0].split(" ")[0].strip()
+            if prefix and len(prefix) >= 2:
+                ua_prefixes.add(prefix)
+        if ua_prefixes:
+            # 허용 패턴: ^(curl|python|aiohttp|...)
+            ua_regex = "^(" + "|".join(sorted(ua_prefixes)) + ")"
+            # NOT match → 차단. WAF에서 NOT은 NotStatement로.
+            value_checks.append({"NotStatement": {"Statement": {
+                "RegexMatchStatement": {
+                    "RegexString": ua_regex,
+                    "FieldToMatch": {"SingleHeader": {"Name": "user-agent"}},
+                    "TextTransformations": [{"Priority": 0, "Type": "LOWERCASE"}]
+                }
+            }}})
+
+    # 최종 룰: scope AND (알 수 없는 이름 OR 값 불일치)
+    if value_checks:
+        block_condition = {"OrStatement": {"Statements": [anomaly_name] + value_checks}}
+    else:
+        block_condition = anomaly_name
+
+    # ★ Priority 6: base가 0~2(KnownBadInputs/BlockAttacks/BlockUnknownPath) + Allow는 10~12로 미뤄둠.
+    #   Allow는 terminating이라 헤더룰이 Allow보다 뒤면 정상경로 요청에서 firing 못 함(404남) → 반드시 Allow(10~12)
+    #   앞(gap 3~9)에 둬야 함. 그래서 6. (waf.tf가 이 gap을 비워둠)
     return {
-        "Name": "BlockUnknownHeaders",
-        "Priority": 0,
-        "Action": {"Block": {}},
-        "Statement": {
-            "AndStatement": {
-                "Statements": [
-                    {
-                        "OrStatement": {
-                            "Statements": [
-                                {"ByteMatchStatement": {"SearchString": "/v1/", "FieldToMatch": {"UriPath": {}}, "PositionalConstraint": "STARTS_WITH", "TextTransformations": [{"Priority": 0, "Type": "NONE"}]}},
-                                {"ByteMatchStatement": {"SearchString": "/images/", "FieldToMatch": {"UriPath": {}}, "PositionalConstraint": "STARTS_WITH", "TextTransformations": [{"Priority": 0, "Type": "NONE"}]}},
-                                {"ByteMatchStatement": {"SearchString": "/healthcheck", "FieldToMatch": {"UriPath": {}}, "PositionalConstraint": "EXACTLY", "TextTransformations": [{"Priority": 0, "Type": "NONE"}]}},
-                            ]
-                        }
-                    },
-                    {
-                        "RegexMatchStatement": {
-                            "RegexString": "^.*",
-                            "FieldToMatch": {
-                                "Headers": {
-                                    "MatchPattern": {"ExcludedHeaders": allowed_headers},
-                                    "MatchScope": "ALL",
-                                    "OversizeHandling": "CONTINUE",
-                                }
-                            },
-                            "TextTransformations": [{"Priority": 0, "Type": "NONE"}],
-                        }
-                    },
-                ]
-            }
-        },
-        "VisibilityConfig": {"SampledRequestsEnabled": True, "CloudWatchMetricsEnabled": True, "MetricName": "BlockUnknownHeaders"},
+        "Name": "BlockUnknownHeaders", "Priority": 5, "Action": {"Block": {}},
+        "Statement": {"AndStatement": {"Statements": [scope, block_condition]}},
+        "VisibilityConfig": {"SampledRequestsEnabled": True, "CloudWatchMetricsEnabled": True,
+                             "MetricName": "BlockUnknownHeaders"},
     }
 
 
+def install(rule):
+    waf = boto3.client("wafv2", region_name=REGION)
+    acl_id, _ = get_acl(waf)
+    resp = waf.get_web_acl(Name=ACL_NAME, Scope=SCOPE, Id=acl_id)
+    rules = [r for r in resp["WebACL"]["Rules"] if r["Name"] != "BlockUnknownHeaders"]
+    rules.append(rule)
+    waf.update_web_acl(Name=ACL_NAME, Scope=SCOPE, Id=acl_id, LockToken=resp["LockToken"],
+                       DefaultAction=resp["WebACL"]["DefaultAction"],
+                       VisibilityConfig=resp["WebACL"]["VisibilityConfig"], Rules=rules)
+
+
 def main():
+    auto = "--auto" in sys.argv
+    max_wait = MAX_WAIT
+    if "--wait" in sys.argv:
+        try:
+            max_wait = int(sys.argv[sys.argv.index("--wait") + 1]) * 60
+        except (ValueError, IndexError):
+            pass
+
     waf = boto3.client("wafv2", region_name=REGION)
     acl_id, acl_arn = get_acl(waf)
-    print(f"WAF ACL: {ACL_NAME} ({acl_id})\n")
+    print(f"WAF ACL: {ACL_NAME} ({acl_id})")
+    print("=== 헤더 화이트리스트 (커버리지 게이팅) ===")
 
-    # 헤더 수집 → 화이트리스트 추가
-    print("=== 헤더 화이트리스트 룰 추가 ===")
-    headers_map = collect_headers(waf, acl_arn)
+    metrics = get_allow_metrics(waf, acl_id)
+    seen = collect_until_covered(waf, acl_arn, metrics, max_wait)
 
-    if not headers_map:
-        print("❌ 헤더 수집 실패 (트래픽 없음). 나중에 다시 실행하세요.")
-        return
+    enforce_pairs = [e for e in EXPECTED if e in seen]   # 관측된 기대 조합만 enforce
+    if not enforce_pairs:
+        print("❌ 관측된 조합 없음 (정상 트래픽 필요). 나중에 다시 실행."); return
 
-    print(f"\n감지된 헤더 ({len(headers_map)}개):")
-    for name, values in sorted(headers_map.items()):
-        sample_vals = list(values)[:3]
-        vals_str = ", ".join(sample_vals)
-        if len(values) > 3:
-            vals_str += f" ... (+{len(values)-3})"
-        print(f"  {name:<25} = {vals_str}")
+    allowed = set(BASE_ALLOW)
+    allowed_values = {}  # {header_name: set(values)} — 값 화이트리스트
+    for pair in enforce_pairs:
+        pair_data = seen[pair]
+        allowed |= pair_data.get("names", set())
+        for hname, vals in pair_data.get("values", {}).items():
+            allowed_values.setdefault(hname, set()).update(vals)
+    allowed = {h for h in allowed if not any(kw in h for kw in NAME_BLACKLIST)}
 
-    # 제외할 헤더 입력
-    exclude = input("\n제외할 헤더 (쉼표 구분, 없으면 엔터): ").strip()
-    if exclude:
-        for h in exclude.split(","):
-            h = h.strip().lower()
-            if h in headers_map:
-                del headers_map[h]
-                print(f"  제외됨: {h}")
+    print(f"\nenforce 조합({len(enforce_pairs)}): {[f'{m} {p}' for m,p in enforce_pairs]}")
+    exempt = [f"{m} {p}" for m, p in EXPECTED if (m, p) not in seen]
+    if exempt:
+        print(f"면제 조합(미관측 → 안 막음): {exempt}")
+    print(f"허용 헤더 이름({len(allowed)}): {sorted(allowed)}")
+    if "user-agent" in allowed_values:
+        print(f"허용 User-Agent 값: {sorted(allowed_values['user-agent'])}")
 
-    allowed_headers = sorted(headers_map.keys())
-    print(f"\n최종 허용 헤더 ({len(allowed_headers)}개): {allowed_headers}")
+    if not auto:
+        try:
+            import threading
+            res = [None]
+            t = threading.Thread(target=lambda: res.__setitem__(0, input(
+                "\n제외할 헤더(쉼표, 30초내 엔터=바로적용): ").strip()), daemon=True)
+            t.start(); t.join(timeout=30)
+            if res[0]:
+                for h in res[0].split(","):
+                    allowed.discard(h.strip().lower())
+                print(f"  제외 반영")
+            elif t.is_alive():
+                print("  30초 경과 → 바로 적용")
+        except Exception:
+            pass
 
-    confirm = input("\n이 헤더로 화이트리스트 적용? (y/n): ").strip().lower()
-    if confirm != "y":
-        print("건너뜀"); return
+    install(build_header_rule(enforce_pairs, allowed, allowed_values))
+    print("\n✅ 적용 완료. enforce 조합에서 허용 외 헤더 이름/값 → 403.")
+    print("   정상이 막히면 즉시 해제: python update_waf.py --remove")
 
-    header_rule = build_header_rule(allowed_headers)
 
-    # 기존 WAF rules 유지 + header rule 추가/교체
+def remove_header_rule():
+    waf = boto3.client("wafv2", region_name=REGION)
+    acl_id, _ = get_acl(waf)
     resp = waf.get_web_acl(Name=ACL_NAME, Scope=SCOPE, Id=acl_id)
-    lock_token = resp["LockToken"]
-    current_rules = resp["WebACL"]["Rules"]
-    vis = resp["WebACL"]["VisibilityConfig"]
-    default_action = resp["WebACL"]["DefaultAction"]
-
-    # 기존 BlockUnknownHeaders 제거 후 새로 추가
-    rules = [r for r in current_rules if r["Name"] != "BlockUnknownHeaders"]
-    rules.append(header_rule)
-
-    waf.update_web_acl(
-        Name=ACL_NAME, Scope=SCOPE, Id=acl_id,
-        LockToken=lock_token,
-        DefaultAction=default_action,
-        VisibilityConfig=vis,
-        Rules=rules,
-    )
-    print(f"\n✅ 헤더 화이트리스트 적용 완료")
-    print(f"   허용 헤더: {allowed_headers}")
-    print(f"   이 외 헤더 포함된 API 요청 → 403")
+    rules = [r for r in resp["WebACL"]["Rules"] if r["Name"] != "BlockUnknownHeaders"]
+    if len(rules) == len(resp["WebACL"]["Rules"]):
+        print("BlockUnknownHeaders 룰 없음 (이미 제거됨)"); return
+    waf.update_web_acl(Name=ACL_NAME, Scope=SCOPE, Id=acl_id, LockToken=resp["LockToken"],
+                       DefaultAction=resp["WebACL"]["DefaultAction"],
+                       VisibilityConfig=resp["WebACL"]["VisibilityConfig"], Rules=rules)
+    print("✅ BlockUnknownHeaders 제거 완료.")
 
 
 if __name__ == "__main__":
-    main()
+    if "--remove" in sys.argv:
+        remove_header_rule()
+    else:
+        main()

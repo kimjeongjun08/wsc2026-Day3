@@ -30,17 +30,17 @@ variable "node_instance_type" {
 
 variable "node_desired_size" {
   type    = number
-  default = 1
+  default = 1 # MNG 1대 = user+product 패킹. stress는 anti-affinity로 카펜터 전용노드 1대 → 총 baseline 2대.
 }
 
 variable "node_max_size" {
   type    = number
-  default = 4
+  default = 1 # MNG 1 고정(탄력 스케일은 Karpenter). MNG 2로 하면 user/product가 두 노드에 퍼져 stress가 3번째로 밀림.
 }
 
 variable "node_min_size" {
   type    = number
-  default = 1
+  default = 1 # MNG 1 고정.
 }
 
 variable "db_name" {

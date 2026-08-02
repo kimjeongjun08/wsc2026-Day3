@@ -25,7 +25,22 @@ spec:
       labels:
         app: user
     spec:
-      terminationGracePeriodSeconds: 15
+      terminationGracePeriodSeconds: 35
+      priorityClassName: high-priority
+      # stress 노드엔 안 앉음(stress가 노드 독차지 → 코어 경합 0, stress 30%↑ 유지).
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchExpressions:
+                  - key: app
+                    operator: In
+                    values: ["stress"]
+      dnsConfig:
+        options:
+          - name: ndots
+            value: "2"
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname
@@ -49,13 +64,13 @@ spec:
             httpGet:
               path: /healthcheck
               port: 8080
-            failureThreshold: 10
-            periodSeconds: 2
+            failureThreshold: 20
+            periodSeconds: 1
           readinessProbe:
             httpGet:
               path: /healthcheck
               port: 8080
-            periodSeconds: 3
+            periodSeconds: 1
             failureThreshold: 2
             successThreshold: 1
           livenessProbe:
@@ -67,7 +82,7 @@ spec:
           resources:
             requests:
               cpu: 30m
-              memory: 48Mi
+              memory: 32Mi
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -89,7 +104,22 @@ spec:
       labels:
         app: product
     spec:
-      terminationGracePeriodSeconds: 15
+      terminationGracePeriodSeconds: 35
+      priorityClassName: high-priority
+      # stress 노드엔 안 앉음(stress가 노드 독차지 → 코어 경합 0, stress 30%↑ 유지).
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchExpressions:
+                  - key: app
+                    operator: In
+                    values: ["stress"]
+      dnsConfig:
+        options:
+          - name: ndots
+            value: "2"
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname
@@ -113,13 +143,13 @@ spec:
             httpGet:
               path: /healthcheck
               port: 8080
-            failureThreshold: 10
-            periodSeconds: 2
+            failureThreshold: 20
+            periodSeconds: 1
           readinessProbe:
             httpGet:
               path: /healthcheck
               port: 8080
-            periodSeconds: 3
+            periodSeconds: 1
             failureThreshold: 2
             successThreshold: 1
           livenessProbe:
@@ -131,7 +161,7 @@ spec:
           resources:
             requests:
               cpu: 30m
-              memory: 48Mi
+              memory: 32Mi
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -153,7 +183,25 @@ spec:
       labels:
         app: stress
     spec:
-      terminationGracePeriodSeconds: 15
+      terminationGracePeriodSeconds: 35
+      priorityClassName: normal-priority
+      # stress는 user/product/stress와 같은 노드 금지(required anti-affinity) → 노드 독차지 = 2코어 확보(성능 30%↑ → 비용 언락).
+      #   heavy stress를 preferred로 두면: idle에 공유노드에 앉은 뒤 부하가 와도 재배치가 안 됨
+      #   (anti-affinity는 IgnoredDuringExecution) → 코어 뺏겨 <30% gate 실패. required로 처음부터 전용노드 보장.
+      #   (앱이 가벼우면 turn.py가 baseline 1로 유도 → 그땐 이 격리가 카펜터 노드 하나로 흡수됨)
+      # affinity:
+      #   podAntiAffinity:
+      #     requiredDuringSchedulingIgnoredDuringExecution:
+      #       - topologyKey: kubernetes.io/hostname
+      #         labelSelector:
+      #           matchExpressions:
+      #             - key: app
+      #               operator: In
+      #               values: ["user", "product", "stress"]
+      dnsConfig:
+        options:
+          - name: ndots
+            value: "2"
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname
@@ -166,6 +214,10 @@ spec:
           image: ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/PROJECT-stress:latest
           ports:
             - containerPort: 8080
+          env:
+            # limit 1800m = t3.medium 2코어 → 앱이 병렬화 (length125: 1코어 3.1s → 2코어 1.5s)
+            - name: GOMAXPROCS
+              value: "2"
           envFrom:
             - configMapRef:
                 name: app-config
@@ -177,13 +229,13 @@ spec:
             httpGet:
               path: /healthcheck
               port: 8080
-            failureThreshold: 10
-            periodSeconds: 2
+            failureThreshold: 20
+            periodSeconds: 1
           readinessProbe:
             httpGet:
               path: /healthcheck
               port: 8080
-            periodSeconds: 3
+            periodSeconds: 1
             failureThreshold: 2
             successThreshold: 1
           livenessProbe:
@@ -192,10 +244,13 @@ spec:
               port: 8080
             periodSeconds: 30
             failureThreshold: 5
+          # stress: 앱이 병렬화됨 → limit 2000m(2코어 전부) + GOMAXPROCS 2로 단건 최대 속도.
+          # request 작게(비용) + 노드당 1파드(과밀·starvation 방지). turn.py가 실측으로 재조정.
           resources:
             requests:
-              cpu: 100m
+              cpu: 600m
               memory: 128Mi
             limits:
-              cpu: "1"
+              cpu: 2000m
               memory: 512Mi
+

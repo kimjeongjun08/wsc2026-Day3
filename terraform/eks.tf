@@ -91,6 +91,21 @@ resource "aws_eks_access_policy_association" "root" {
   }
 }
 
+# EKS Access Entry - terraform 실행자 (윈도우에서 kubectl 접근용)
+resource "aws_eks_access_entry" "caller" {
+  cluster_name  = aws_eks_cluster.this.name
+  principal_arn = data.aws_caller_identity.current.arn
+}
+
+resource "aws_eks_access_policy_association" "caller" {
+  cluster_name  = aws_eks_cluster.this.name
+  principal_arn = data.aws_caller_identity.current.arn
+  policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+  access_scope {
+    type = "cluster"
+  }
+}
+
 # EKS Access Entry - bastion role
 resource "aws_eks_access_entry" "bastion" {
   cluster_name  = aws_eks_cluster.this.name

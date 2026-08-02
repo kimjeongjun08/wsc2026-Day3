@@ -16,9 +16,12 @@ spec:
         - key: kubernetes.io/arch
           operator: In
           values: ["amd64"]
+        # 버스트 노드는 spot 우선(비용 ~70%↓, 성능 동일) + on-demand 폴백(spot 없을 때).
+        #   baseline은 MNG 2대(on-demand 고정)라 안정 유지 → spot 중단돼도 서비스 지속.
+        #   spot 리스크(중단) 싫으면 values를 ["on-demand"]로 되돌리면 됨.
         - key: karpenter.sh/capacity-type
           operator: In
-          values: ["on-demand"]
+          values: ["spot", "on-demand"]
         - key: node.kubernetes.io/instance-type
           operator: In
           values: ["${node_instance_type}"]

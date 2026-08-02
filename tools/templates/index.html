@@ -39,7 +39,6 @@ input[type=number] { width:60px; padding:4px; background:#1a1a2e; border:1px sol
   <a href="#" onclick="showPage('traffic')" id="nav_traffic">Traffic</a>
   <a href="#" onclick="showPage('scaling')" id="nav_scaling">Scaling</a>
   <a href="#" onclick="showPage('waf')" id="nav_waf">WAF</a>
-  <a href="#" onclick="showPage('errors')" id="nav_errors">Errors</a>
   <a href="#" onclick="showPage('cluster')" id="nav_cluster">Cluster</a>
 </nav>
 
@@ -97,6 +96,10 @@ input[type=number] { width:60px; padding:4px; background:#1a1a2e; border:1px sol
     <h3>Traffic Phase Analysis (5min segments)</h3>
     <div id="phase_timeline" style="margin-top:8px"></div>
   </div>
+  <div class="card" style="margin-top:12px">
+    <h3>📊 스파이크 예측 & 대응 권장</h3>
+    <div id="prediction_panel" style="padding:8px;color:#888">데이터 수집 중...</div>
+  </div>
 </div>
 
 <!-- SCALING PAGE -->
@@ -104,7 +107,7 @@ input[type=number] { width:60px; padding:4px; background:#1a1a2e; border:1px sol
   <div class="grid">
     <div class="card">
       <h3>Pod Scaling (Manual)</h3>
-      <div class="mini" style="margin-bottom:12px">HPA OFF 상태에서만 유효</div>
+      <div class="mini" style="margin-bottom:12px">HPA와 병행 가능 (CPU 낮으면 HPA가 유지)</div>
       <table>
         <tr><th>App</th><th>Current</th><th>Set Replicas</th><th></th></tr>
         <tr><td style="color:#00bcd4">user</td><td id="sc_user_cur">-</td><td><input type="number" id="sc_user_val" min="0" max="20" value="1"></td><td><button class="btn btn-blue" onclick="doScale('user')">Apply</button></td></tr>
@@ -126,23 +129,42 @@ input[type=number] { width:60px; padding:4px; background:#1a1a2e; border:1px sol
         <button class="btn btn-red" onclick="toggleKarpenter('off')">Karpenter OFF</button>
         <span class="mini" id="karp_status"></span>
       </div>
-      <div style="margin-top:16px;border-top:1px solid #333;padding-top:12px">
-        <p style="font-size:13px;margin-bottom:4px">Karpenter NodePool Limits</p>
-        <span class="mini" style="display:block;margin-bottom:6px">CPU limit = 노드 수 × 노드vCPU (t3.medium=2, t3.large=2, t3.xlarge=4)</span>
-        <span class="mini">CPU: </span><input type="number" id="np_cpu" value="8" min="1" max="64" style="width:60px;background:#1e1e1e;color:#eee;border:1px solid #444;padding:3px">
-        <span class="mini"> Memory(Gi): </span><input type="number" id="np_mem" value="16" min="1" max="256" style="width:60px;background:#1e1e1e;color:#eee;border:1px solid #444;padding:3px">
-        <button class="btn btn-blue" style="margin-left:6px" onclick="applyNodepoolLimits()">Apply</button>
-        <span class="mini" id="np_status"></span>
-      </div>
-
     </div>
   </div>
   <div class="grid" style="margin-top:12px">
     <div class="card">
       <h3>HPA Status (live)</h3>
       <table id="hpa_table"><tr><th>Name</th><th>Target</th><th>Replicas</th><th>CPU util</th><th>min/max</th></tr></table>
+      <div style="margin-top:12px;border-top:1px solid #333;padding-top:10px">
+        <p style="font-size:12px;margin-bottom:6px"><b>HPA min/max 조정</b></p>
+        <span class="mini">App:</span>
+        <select id="hpa_app" style="background:#1e1e1e;color:#eee;border:1px solid #444;padding:2px">
+          <option>user</option><option>product</option><option>stress</option>
+        </select>
+        <span class="mini">min:</span><input type="number" id="hpa_min_val" value="1" min="1" max="50" style="width:45px;background:#1e1e1e;color:#eee;border:1px solid #444;padding:2px">
+        <span class="mini">max:</span><input type="number" id="hpa_max_val" value="20" min="1" max="100" style="width:45px;background:#1e1e1e;color:#eee;border:1px solid #444;padding:2px">
+        <button class="btn btn-blue" style="padding:2px 8px;font-size:11px" onclick="patchHPA()">Apply</button>
+        <span class="mini" id="hpa_patch_status"></span>
+      </div>
+      <div style="margin-top:10px;border-top:1px solid #333;padding-top:10px">
+        <p style="font-size:12px;margin-bottom:6px"><b>Rollout Restart</b></p>
+        <button class="btn btn-blue" style="padding:3px 10px;font-size:11px" onclick="doRollout('user')">user</button>
+        <button class="btn btn-blue" style="padding:3px 10px;font-size:11px" onclick="doRollout('product')">product</button>
+        <button class="btn btn-blue" style="padding:3px 10px;font-size:11px" onclick="doRollout('stress')">stress</button>
+        <span class="mini" id="rollout_status"></span>
+      </div>
     </div>
     <div class="card"><h3>Node Count Timeline</h3><canvas id="chart_nodes"></canvas></div>
+  </div>
+  <div class="grid" style="margin-top:12px">
+    <div class="card">
+      <h3>Deploy Resources (현재 request/limit)</h3>
+      <div id="deploy_res"></div>
+    </div>
+    <div class="card">
+      <h3>Error Logs (최근 60초)</h3>
+      <div id="error_logs" style="font-size:11px;max-height:200px;overflow-y:auto"></div>
+    </div>
   </div>
   <div class="card" style="margin-top:12px">
     <h3>Karpenter NodePools</h3>
@@ -174,21 +196,12 @@ input[type=number] { width:60px; padding:4px; background:#1a1a2e; border:1px sol
   </div>
 </div>
 
-<!-- ERRORS PAGE (ALB access logs, 4xx/5xx) -->
-<div class="page" id="page_errors">
-  <div class="grid3">
-    <div class="card"><h3>4xx total</h3><div class="stat warn" id="e_4xx">-</div><div class="mini">recent logs</div></div>
-    <div class="card"><h3>5xx total</h3><div class="stat bad" id="e_5xx">-</div><div class="mini">recent logs</div></div>
-    <div class="card"><h3>By Status</h3><div class="stat" id="e_bystatus" style="font-size:16px">-</div><div class="mini" id="e_lag">ALB → S3 배치 전송: 최대 ~5분 지연</div></div>
-  </div>
-  <div class="card" style="margin-top:12px">
-    <h3>4xx / 5xx Requests — why (ALB access log)</h3>
-    <div id="err_table" style="max-height:560px;overflow:auto"></div>
-  </div>
-</div>
-
 <!-- CLUSTER PAGE -->
 <div class="page" id="page_cluster">
+  <div class="card" style="margin-bottom:12px">
+    <h3>Application Status (앱별 상세)</h3>
+    <div id="app_status"></div>
+  </div>
   <div class="grid">
     <div class="card"><h3>Pods</h3><div id="pod_list"></div></div>
     <div class="card"><h3>Nodes</h3><div id="node_list"></div></div>
@@ -210,14 +223,18 @@ function toast(msg) {
   setTimeout(()=>t.style.display='none', 3000);
 }
 
-const cOpts = {responsive:true,animation:false,scales:{x:{display:false},y:{beginAtZero:true,grid:{color:'#1a3a5c'}}},plugins:{legend:{labels:{color:'#aaa',font:{size:10}}}}};
+const cOpts = {responsive:true,animation:false,interaction:{mode:'index',intersect:false},elements:{point:{radius:2}},scales:{x:{display:false},y:{beginAtZero:true,grid:{color:'#1a3a5c'}}},plugins:{legend:{labels:{color:'#aaa',font:{size:10}}},tooltip:{enabled:true,mode:'index',intersect:false}}};
 const mkChart = (id,labels,ds) => new Chart(document.getElementById(id),{type:'line',data:{labels,datasets:ds},options:cOpts});
 let cpuC,reqC,rtC,errC,tgtErrC,twoxxC,trafficC,distC,rdsIoC,rdsLatC,nodesC,wafC;
 
 function initCharts(d) {
   const l=d.map(x=>x.ts);
   cpuC=mkChart('chart_cpu',l,[{label:'CPU%',data:d.map(x=>x.rds_cpu),borderColor:'#00d4ff',fill:false,tension:.3}]);
-  reqC=mkChart('chart_req',l,[{label:'Req',data:d.map(x=>x.alb_req),borderColor:'#ff9800',fill:false,tension:.3}]);
+  reqC=mkChart('chart_req',l,[
+    {label:'user',data:d.map(x=>x.user_req||0),borderColor:'#00bcd4',fill:false,tension:.3},
+    {label:'product',data:d.map(x=>x.product_req||0),borderColor:'#ff9800',fill:false,tension:.3},
+    {label:'stress',data:d.map(x=>x.stress_req||0),borderColor:'#e040fb',fill:false,tension:.3},
+    {label:'total',data:d.map(x=>x.alb_req||0),borderColor:'#888',borderDash:[5,5],fill:false,tension:.3}]);
   rtC=mkChart('chart_rt',l,[
     {label:'user',data:d.map(x=>x.user_rt||0),borderColor:'#00bcd4',fill:false,tension:.3},
     {label:'product',data:d.map(x=>x.product_rt||0),borderColor:'#ff9800',fill:false,tension:.3},
@@ -247,7 +264,7 @@ function initCharts(d) {
 function updateCharts(d) {
   const l=d.map(x=>x.ts);
   cpuC.data.labels=l; cpuC.data.datasets[0].data=d.map(x=>x.rds_cpu); cpuC.update();
-  reqC.data.labels=l; reqC.data.datasets[0].data=d.map(x=>x.alb_req); reqC.update();
+  reqC.data.labels=l; reqC.data.datasets[0].data=d.map(x=>x.user_req||0); reqC.data.datasets[1].data=d.map(x=>x.product_req||0); reqC.data.datasets[2].data=d.map(x=>x.stress_req||0); reqC.data.datasets[3].data=d.map(x=>x.alb_req||0); reqC.update();
   rtC.data.labels=l; rtC.data.datasets[0].data=d.map(x=>x.user_rt||0); rtC.data.datasets[1].data=d.map(x=>x.product_rt||0); rtC.data.datasets[2].data=d.map(x=>x.stress_rt||0); rtC.update();
   errC.data.labels=l; errC.data.datasets[0].data=d.map(x=>x.alb_4xx); errC.data.datasets[1].data=d.map(x=>x.alb_5xx); errC.update();
   tgtErrC.data.labels=l; tgtErrC.data.datasets[0].data=d.map(x=>x.tgt_4xx||0); tgtErrC.data.datasets[1].data=d.map(x=>x.tgt_5xx||0); tgtErrC.update();
@@ -362,16 +379,179 @@ async function refreshTraffic() {
     </div>`;
   });
   html+='</div>';
+
+  // stress 대응 권장 (패턴 기반)
+  const pattern = s.overall_pattern;
+
+  // 전체 phases 표시 (5분 세그먼트)
+  if (s.phases && s.phases.length > 0) {
+    const patColors = {SPIKE:'#f44336',SURGE:'#ff9800',RAMP_UP:'#2196f3',DROP:'#ff9800',COOLING:'#4caf50',STEADY_HIGH:'#e040fb',STEADY_LOW:'#666',NORMAL:'#555'};
+    const patIcons = {SPIKE:'⚡',SURGE:'📈',RAMP_UP:'↗',DROP:'📉',COOLING:'↘',STEADY_HIGH:'━',STEADY_LOW:'━',NORMAL:'·'};
+    html += `<div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:10px">`;
+    s.phases.forEach((p,i) => {
+      const c = patColors[p.pattern] || '#555';
+      const icon = patIcons[p.pattern] || '·';
+      html += `<div style="padding:3px 8px;background:#161b22;border:1px solid ${c}33;border-radius:4px;font-size:11px" title="${p.desc} (avg:${p.avg} peak:${p.peak} ${p.change_pct>0?'+':''}${p.change_pct}%)">
+        <span style="color:${c}">${icon} ${p.pattern}</span>
+      </div>`;
+    });
+    html += `</div>`;
+  }
+
+  // 패턴 감지 시 트래픽 높은 앱 전부 권장
+  let advice = '';
+  if (pattern === 'SPIKE' || pattern === 'SURGE' || pattern === 'RAMP_UP') {
+    const latest = d[d.length-1]||{};
+    const avg_total = s.avg || 1;
+    const curPods = {user:parseInt(document.getElementById('sc_user_cur')?.textContent||'1'), product:parseInt(document.getElementById('sc_prod_cur')?.textContent||'1'), stress:parseInt(document.getElementById('sc_stress_cur')?.textContent||'2')};
+    const color = pattern==='SPIKE'?'#f44336':'#ff9800';
+    const label = pattern==='SPIKE'?'⚠ SPIKE 감지!':'↑ RAMP_UP';
+    advice = `<div style="margin-top:12px;padding:10px;background:#0d1117;border:1px solid ${color};border-radius:6px">
+      <span style="color:${color};font-weight:bold">${label}</span><br>`;
+    ['user','product','stress'].forEach(app => {
+      const req = latest[app+'_req']||0;
+      if (req > avg_total * 0.1) {  // 전체 평균의 10% 이상이면 표시
+        const cur = curPods[app]||1;
+        const recommended = pattern==='SPIKE'?Math.max(cur+5,10):Math.max(cur+3,6);
+        advice += `<div style="margin-top:6px;display:flex;align-items:center;justify-content:space-between">
+          <span style="color:#eee">${app}: ${Math.round(req)} req/min (현재 ${cur}개)</span>
+          <button class="btn btn-blue" style="padding:2px 10px;font-size:11px" onclick="quickScale('${app}',${recommended})">${app} → ${recommended}개</button>
+        </div>`;
+      }
+    });
+    advice += `</div>`;
+  } else if (pattern === 'DROP' || pattern === 'COOLING') {
+    advice = `<div style="margin-top:12px;padding:8px;background:#001a10;border:1px solid #4caf50;border-radius:6px">
+      <span style="color:#4caf50">✓ 트래픽 감소 중</span>
+      <span style="color:#aaa"> — HPA/Karpenter가 자동 축소합니다</span>
+    </div>`;
+  }
+  html += advice;
+
+  // 스파이크 예측 알림 (상단)
+  if (s.prediction && typeof s.prediction === 'object') {
+    const apps = Object.entries(s.prediction);
+    const urgent = apps.filter(([_,p])=>p.next_spike_min<=5).sort((a,b)=>a[1].next_spike_min-b[1].next_spike_min);
+    if (urgent.length > 0) {
+      urgent.forEach(([app, p]) => {
+        const urgency = p.next_spike_min <= 2 ? '#f44336' : '#ff9800';
+        html += `<div style="margin-top:8px;padding:8px 14px;background:#0d1117;border:1px solid ${urgency};border-radius:6px;display:flex;align-items:center;justify-content:space-between">
+          <span style="color:${urgency};font-weight:bold">⚡ ${app} 스파이크 ${p.next_spike_min}분 후 (${p.current}→${p.recommended}개)</span>
+          <button class="btn btn-blue" style="padding:3px 12px" onclick="quickScale('${app}',${p.recommended})">선제 scale</button>
+        </div>`;
+      });
+    }
+    // 전체 없으면 안정 표시
+    if (urgent.length === 0 && apps.length > 0) {
+      html += `<div style="margin-top:8px;padding:8px;color:#4caf50">✅ 스파이크 예측 감지 중 (모든 앱 안정)</div>`;
+    }
+  }
+
   document.getElementById('phase_timeline').innerHTML=html;
+
+  // 패턴 분석 패널 (하단 카드)
+  let pred_html = '';
+  if (s.prediction && typeof s.prediction === 'object') {
+    const apps = Object.entries(s.prediction);
+    const colors = {user:'#00bcd4', product:'#ff9800', stress:'#e040fb'};
+    const icons = {scale_up:'🚀', spike:'⚡', auto:'🤖', scale_down:'📉'};
+    pred_html = '';
+    apps.forEach(([app, p]) => {
+      const urgency = p.next_spike_min <= 2 ? '#f44336' : p.next_spike_min <= 5 ? '#ff9800' : '#4caf50';
+      const now = new Date();
+      // 예상 시간: 서버의 next_spike_min을 실시간 countdown으로
+      if (!window._spikeHistory) window._spikeHistory = {};
+      if (!window._spikeHistory[app]) window._spikeHistory[app] = [];
+      
+      // 새 예측이면 기록
+      const key = `${app}_${p.spike_count}`;
+      if (!window._predCache) window._predCache = {};
+      if (!window._predCache[key]) {
+        window._predCache[key] = {time: new Date(Date.now() + p.next_spike_min*60000), count: p.spike_count};
+        window._spikeHistory[app].push({count: p.spike_count, time: window._predCache[key].time});
+      }
+      const spikeTime = window._predCache[key].time;
+      const remainMs = spikeTime - Date.now();
+      const remainMin = Math.max(0, Math.floor(remainMs / 60000));
+      const remainSec = Math.max(0, Math.floor((remainMs % 60000) / 1000));
+      const preTime = new Date(spikeTime.getTime() - 60000);
+      const postTime = new Date(spikeTime.getTime() + 180000);
+      const recoverTime = new Date(spikeTime.getTime() + 300000);
+      const fmt = d => d.toTimeString().slice(0,8);
+      const countdownColor = remainMs <= 120000 ? '#f44336' : remainMs <= 300000 ? '#ff9800' : '#4caf50';
+
+      pred_html += `<div style="margin-bottom:14px;padding:10px;background:#161b22;border:1px solid #30363d;border-radius:8px">
+        <div style="color:${colors[app]};font-weight:bold;margin-bottom:8px">${app.toUpperCase()} <span style="color:${urgency};font-size:12px">(${p.avg_interval_min}분 주기 · ${p.spike_count}회)</span> <span style="color:${countdownColor};font-size:13px;font-family:monospace">${remainMs > 0 ? `${remainMin}분 ${remainSec}초 후` : '도래'}</span></div>
+        <div style="font-size:12px">
+          <div style="display:flex;gap:10px;padding:4px 0;border-bottom:1px solid #21262d">
+            <span style="color:#8b949e;width:65px;font-family:monospace">${fmt(preTime)}</span>
+            <span>🚀</span>
+            <span style="color:#2196f3;width:80px">선제 scale</span>
+            <span style="color:#eee">${app} → ${p.recommended}개</span>
+            <button class="btn btn-blue" style="padding:1px 8px;font-size:10px;margin-left:auto" onclick="quickScale('${app}',${p.recommended})">실행</button>
+          </div>
+          <div style="display:flex;gap:10px;padding:4px 0;border-bottom:1px solid #21262d">
+            <span style="color:#8b949e;width:65px;font-family:monospace">${fmt(spikeTime)}</span>
+            <span>⚡</span>
+            <span style="color:#f44336;width:80px">스파이크</span>
+            <span style="color:#eee">peak ~${p.spike_peak_rps} req/min</span>
+          </div>
+          <div style="display:flex;gap:10px;padding:4px 0;border-bottom:1px solid #21262d">
+            <span style="color:#8b949e;width:65px;font-family:monospace">${fmt(postTime)}</span>
+            <span>🤖</span>
+            <span style="color:#4caf50;width:80px">자동 대응</span>
+            <span style="color:#888">HPA+scaler 처리</span>
+          </div>
+          <div style="display:flex;gap:10px;padding:4px 0">
+            <span style="color:#8b949e;width:65px;font-family:monospace">${fmt(recoverTime)}</span>
+            <span>📉</span>
+            <span style="color:#ff9800;width:80px">자동 축소</span>
+            <span style="color:#888">${app} → min으로 수렴</span>
+          </div>
+        </div>
+      </div>`;
+    });
+    // 이전 스파이크 타임라인 (상단에 눈에 띄게)
+    let histHtml = '';
+    Object.entries(window._spikeHistory || {}).forEach(([app, spikes]) => {
+      if (spikes.length > 0) {
+        spikes.forEach(sp => {
+          const t = sp.time instanceof Date ? sp.time.toTimeString().slice(0,5) : '?';
+          const passed = sp.time < new Date();
+          const isCurrent = sp === spikes[spikes.length-1];
+          const color = isCurrent ? '#ff9800' : (passed ? '#4caf50' : '#555');
+          const icon = isCurrent ? '⏳' : (passed ? '✓' : '·');
+          histHtml += `<span style="display:inline-block;padding:2px 6px;margin:2px;background:#0d1117;border:1px solid ${color}44;border-radius:4px;font-size:11px;color:${color}">${icon} ${sp.count}회 ${t}</span>`;
+        });
+      }
+    });
+    if (histHtml) pred_html = `<div style="margin-bottom:10px"><span style="color:#8b949e;font-size:11px">스파이크 이력: </span>${histHtml}</div>` + pred_html;
+
+    // 수동 선제 scale 버튼 (예측 없어도 항상 표시)
+    pred_html += `<div style="margin-top:10px;padding:8px;border-top:1px solid #21262d;display:flex;gap:8px;align-items:center">
+      <span style="color:#8b949e;font-size:11px">수동 선제:</span>
+      <button class="btn btn-blue" style="padding:2px 8px;font-size:10px" onclick="quickScale('stress',10)">stress→10</button>
+      <button class="btn btn-blue" style="padding:2px 8px;font-size:10px" onclick="quickScale('stress',15)">stress→15</button>
+      <button class="btn btn-blue" style="padding:2px 8px;font-size:10px" onclick="quickScale('user',5)">user→5</button>
+      <button class="btn btn-blue" style="padding:2px 8px;font-size:10px" onclick="quickScale('product',5)">product→5</button>
+    </div>`;
+    pred_html += `<div style="color:#555;font-size:10px;margin-top:4px">※ 실시간 countdown. 수동 버튼은 min도 같이 설정됨</div>`;
+  } else if (s.phases && s.phases.length >= 3) {
+    pred_html = '<span style="color:#888">스파이크 패턴 아직 미감지 (2회 이상 필요)</span>';
+  } else {
+    pred_html = '<span style="color:#888">데이터 수집 중... (최소 15분 필요)</span>';
+  }
+  document.getElementById('prediction_panel').innerHTML = pred_html;
 }
 
 async function refreshPods() {
-  const r=await fetch('/api/pods'); const pods=await r.json();
+  const r=await fetch('/api/pods'); let pods=await r.json();
+  pods.sort((a,b)=>a.app.localeCompare(b.app)||a.name.localeCompare(b.name));
   const c={user:'#00bcd4',product:'#ff9800',stress:'#e040fb'};
-  let h='<table><tr><th>Name</th><th>App</th><th>Status</th><th>Restarts</th><th>Reason</th></tr>';
+  let h='<table><tr><th>Name</th><th>App</th><th>Status</th><th>Age</th><th>CPU</th><th>Mem</th><th>Node</th><th>Restarts</th><th></th></tr>';
   const counts={user:0,product:0,stress:0};
   const bad={OOMKilled:1,CrashLoopBackOff:1,Error:1,ImagePullBackOff:1,ErrImagePull:1};
-  pods.forEach(p=>{counts[p.app]=(counts[p.app]||0)+1; const rc=(p.reason&&p.reason!=='-')?(bad[p.reason]?'#f44336':'#ff9800'):'#888'; h+=`<tr><td style="color:${c[p.app]||'#fff'}">${p.name}</td><td>${p.app}</td><td style="color:${p.status==='Running'?'#4caf50':'#f44336'}">${p.status}</td><td style="color:${p.restarts>0?'#ff9800':'#888'}">${p.restarts}</td><td style="color:${rc}">${p.reason||'-'}</td></tr>`;});
+  pods.forEach(p=>{counts[p.app]=(counts[p.app]||0)+1; const rc=(p.reason&&p.reason!=='-')?(bad[p.reason]?'#f44336':'#ff9800'):'#888'; h+=`<tr><td style="color:${c[p.app]||'#fff'};font-size:11px">${p.name}</td><td>${p.app}</td><td style="color:${p.status==='Running'?'#4caf50':'#f44336'}">${p.status}</td><td>${p.age||'-'}</td><td>${p.cpu||'-'}</td><td>${p.memory||'-'}</td><td style="font-size:10px">${(p.node||'-').split('.')[0]}</td><td style="color:${p.restarts>0?'#ff9800':'#888'}">${p.restarts}</td><td><button class="btn btn-red" style="padding:1px 6px;font-size:10px" onclick="deletePod('${p.name}')">Del</button></td></tr>`;});
   h+='</table>';
   document.getElementById('pod_list').innerHTML=h;
   document.getElementById('sc_user_cur').textContent=counts.user;
@@ -407,6 +587,97 @@ async function toggleKarpenter(action) {
   document.getElementById('karp_status').textContent=j.msg;
   document.getElementById('karp_status').style.color=action==='on'?'#4caf50':'#f44336';
   toast(j.msg);
+}
+async function quickScale(app, replicas) {
+  const r=await fetch(`/api/scale/${app}/${replicas}`,{method:'POST'}); const j=await r.json();
+  toast(j.ok?`✓ ${app} → ${replicas}개`:`✗ ${j.msg}`);
+  setTimeout(refreshPods,2000);
+}
+async function refreshAppStatus() {
+  try {
+    const [hpaR, topR, metR] = await Promise.all([
+      fetch('/api/hpa').then(r=>r.json()),
+      fetch('/api/top').then(r=>r.json()),
+      fetch('/api/metrics').then(r=>r.json())
+    ]);
+    const latest = metR.length ? metR[metR.length-1] : {};
+    const colors = {user:'#00bcd4', product:'#ff9800', stress:'#e040fb'};
+
+    let h = '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px">';
+    for (const app of ['user','product','stress']) {
+      const hpa = hpaR.find(x=>x.ref===app) || {};
+      const pods = topR.pods ? topR.pods.filter(p=>p.name.includes(app)) : [];
+      const totalCpu = pods.reduce((s,p)=>s+parseInt(p.cpu)||0, 0);
+      const rt = latest[app+'_rt'] || 0;
+      const req = latest[app+'_req'] || 0;
+      const healthy = latest[app+'_healthy'] || 0;
+      const c5 = latest[app+'_5xx'] || 0;
+      const utilPct = hpa.cur_util || '-';
+      const sloMs = app==='stress' ? 1000 : 200;
+      const rtColor = rt > sloMs ? '#f44336' : rt > sloMs*0.7 ? '#ff9800' : '#4caf50';
+
+      h += `<div style="background:#161b22;border:1px solid #30363d;border-radius:8px;padding:14px">
+        <div style="font-size:14px;font-weight:bold;color:${colors[app]};margin-bottom:10px">${app.toUpperCase()}</div>
+        <table style="width:100%;font-size:12px">
+          <tr><td style="color:#8b949e">Pods</td><td style="text-align:right;font-weight:bold">${hpa.current||0} <span style="color:#555">(min:${hpa.min||'-'} max:${hpa.max||'-'})</span></td></tr>
+          <tr><td style="color:#8b949e">CPU util</td><td style="text-align:right">${utilPct}%</td></tr>
+          <tr><td style="color:#8b949e">CPU 합계</td><td style="text-align:right">${totalCpu}m</td></tr>
+          <tr><td style="color:#8b949e">Req/min</td><td style="text-align:right;font-weight:bold">${Math.round(req)}</td></tr>
+          <tr><td style="color:#8b949e">RT (avg)</td><td style="text-align:right;color:${rtColor}">${rt.toFixed(0)}ms</td></tr>
+          <tr><td style="color:#8b949e">Healthy</td><td style="text-align:right;color:#4caf50">${healthy}</td></tr>
+          <tr><td style="color:#8b949e">5xx</td><td style="text-align:right;color:${c5>0?'#f44336':'#888'}">${c5}</td></tr>
+          <tr><td style="color:#8b949e">SLO</td><td style="text-align:right">≤${sloMs}ms</td></tr>
+        </table>
+      </div>`;
+    }
+    h += '</div>';
+    document.getElementById('app_status').innerHTML = h;
+  } catch(e) {}
+}
+async function deletePod(name) {
+  if(!confirm(`파드 ${name} 삭제하시겠습니까?`)) return;
+  const r=await fetch(`/api/pod/delete/${name}`,{method:'POST'}); const j=await r.json();
+  toast(j.ok?`✓ ${name} 삭제됨`:`✗ ${j.msg}`);
+  setTimeout(refreshPods,3000);
+}
+async function patchHPA() {
+  const app=document.getElementById('hpa_app').value;
+  const min=parseInt(document.getElementById('hpa_min_val').value);
+  const max=parseInt(document.getElementById('hpa_max_val').value);
+  const r=await fetch(`/api/hpa/patch/${app}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({min,max})});
+  const j=await r.json();
+  document.getElementById('hpa_patch_status').textContent=j.ok?`✓ ${app} min=${min} max=${max}`:'✗ '+j.msg;
+  toast(j.ok?`${app} HPA: min=${min} max=${max}`:'Error: '+j.msg);
+}
+async function doRollout(app) {
+  if(!confirm(`${app} rollout restart?`)) return;
+  const r=await fetch(`/api/rollout/${app}`,{method:'POST'}); const j=await r.json();
+  document.getElementById('rollout_status').textContent=j.ok?`✓ ${app} restarted`:'✗ '+j.msg;
+  toast(j.ok?`${app} rollout restart`:'Error: '+j.msg);
+}
+async function refreshResources() {
+  try {
+    const r=await fetch('/api/deploy/resources'); const data=await r.json();
+    let h='<table><tr><th>App</th><th>CPU req</th><th>Mem req</th><th>CPU lim</th><th>Mem lim</th></tr>';
+    data.forEach(d=>{
+      h+=`<tr><td>${d.app}</td><td>${d.requests.cpu||'-'}</td><td>${d.requests.memory||'-'}</td><td>${d.limits.cpu||'none'}</td><td>${d.limits.memory||'none'}</td></tr>`;
+    });
+    h+='</table>';
+    document.getElementById('deploy_res').innerHTML=h;
+  } catch(e){}
+}
+async function refreshErrorLogs() {
+  try {
+    const r=await fetch('/api/error-logs'); const logs=await r.json();
+    if(!logs.length) { document.getElementById('error_logs').innerHTML='<span style="color:#4caf50">에러 없음</span>'; return; }
+    let h='';
+    const colors={user:'#00bcd4',product:'#ff9800',stress:'#e040fb'};
+    logs.forEach(l=>{
+      const tc=l.type.includes('5xx')?'#f44336':'#ff9800';
+      h+=`<div style="margin-bottom:2px"><span style="color:${colors[l.app]||'#fff'}">[${l.app}]</span> <span style="color:${tc}">${l.type}</span> ${l.line}</div>`;
+    });
+    document.getElementById('error_logs').innerHTML=h;
+  } catch(e){}
 }
 async function drainNode(name) {
   if(!confirm(`${name} 노드를 drain 하시겠습니까?`)) return;
@@ -450,29 +721,10 @@ async function refreshWAF() {
   document.getElementById('waf_uris').innerHTML=kvTable(k.top_uris||[],'URI','Blocked',r=>r.uri,'no blocked requests');
   document.getElementById('waf_trules').innerHTML=kvTable(k.top_rules||[],'Terminating Rule','Blocked',r=>r.rule,'no blocked requests');
 }
-async function refreshErrors() {
-  let d; try{d=await (await fetch('/api/alb_errors')).json();}catch(e){return;}
-  const bs=d.by_status||{};
-  let n4=0,n5=0; Object.entries(bs).forEach(([s,c])=>{const code=parseInt(s);if(code>=500)n5+=c;else if(code>=400)n4+=c;});
-  document.getElementById('e_4xx').textContent=n4;
-  document.getElementById('e_5xx').textContent=n5;
-  document.getElementById('e_bystatus').textContent=Object.entries(bs).sort().map(([s,c])=>`${s}:${c}`).join('  ')||'none';
-  const sc=s=>{const c=parseInt(s);return c>=500?'#f44336':c>=400?'#ff9800':'#4caf50';};
-  let h='<table><tr><th>Time (UTC)</th><th>Client</th><th>Method</th><th>URL</th><th>ELB</th><th>Target</th><th>RT</th><th>Why</th></tr>';
-  if(!(d.errors||[]).length)h+='<tr><td colspan="8" style="color:#888">no 4xx/5xx in recent logs (또는 아직 S3 미전송)</td></tr>';
-  (d.errors||[]).forEach(e=>{
-    h+=`<tr><td>${(e.time||'').slice(11,19)}</td><td>${e.client}</td><td>${e.method}</td>`+
-       `<td style="max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${e.url}">${e.url}</td>`+
-       `<td style="color:${sc(e.elb_status)};font-weight:bold">${e.elb_status}</td>`+
-       `<td>${e.target_status}</td><td>${e.rt}</td><td style="color:#ffb74d">${e.reason}</td></tr>`;
-  });
-  document.getElementById('err_table').innerHTML=h+'</table>';
-}
-
 async function refresh() {
   const r=await fetch('/api/metrics'); const d=await r.json();
   if(!cpuC)initCharts(d); else updateCharts(d);
-  updateStats(d); refreshTraffic(); refreshPods(); refreshNodes(); refreshTop(); refreshHPA(); refreshKarpenter();
+  updateStats(d); refreshTraffic(); refreshPods(); refreshNodes(); refreshTop(); refreshHPA(); refreshKarpenter(); refreshResources(); refreshErrorLogs(); refreshAppStatus();
 }
 
 async function refreshTop() {
@@ -495,6 +747,5 @@ async function refreshTop() {
 
 refresh(); setInterval(refresh,5000);
 refreshWAF(); setInterval(refreshWAF,30000);
-refreshErrors(); setInterval(refreshErrors,20000);
 </script>
 </body></html>

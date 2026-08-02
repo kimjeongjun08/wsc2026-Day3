@@ -60,8 +60,8 @@ resource "aws_db_instance" "this" {
   instance_class        = var.db_instance_class
   allocated_storage     = var.db_allocated_storage
   storage_type          = "gp3"
-  iops                  = var.db_allocated_storage >= 400 ? 16000 : null
-  storage_throughput    = var.db_allocated_storage >= 400 ? 1000 : null
+  iops                  = var.db_allocated_storage >= 400 ? 64000 : null
+  storage_throughput    = var.db_allocated_storage >= 400 ? 4000 : null
   multi_az          = true
 
   db_name  = var.db_name

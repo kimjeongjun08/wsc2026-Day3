@@ -8,22 +8,22 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: user
-  minReplicas: 1
-  maxReplicas: 8
+  minReplicas: 2
+  maxReplicas: 20
   behavior:
     scaleUp:
       stabilizationWindowSeconds: 0
       policies:
         - type: Pods
-          value: 3
+          value: 4
           periodSeconds: 15
       selectPolicy: Max
     scaleDown:
-      stabilizationWindowSeconds: 30
+      stabilizationWindowSeconds: 60
       policies:
         - type: Percent
-          value: 100
-          periodSeconds: 15
+          value: 30
+          periodSeconds: 30
       selectPolicy: Max
   metrics:
     - type: Resource
@@ -31,7 +31,7 @@ spec:
         name: cpu
         target:
           type: Utilization
-          averageUtilization: 70
+          averageUtilization: 78
 ---
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
@@ -43,22 +43,22 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: product
-  minReplicas: 1
-  maxReplicas: 8
+  minReplicas: 2
+  maxReplicas: 20
   behavior:
     scaleUp:
       stabilizationWindowSeconds: 0
       policies:
         - type: Pods
-          value: 3
+          value: 4
           periodSeconds: 15
       selectPolicy: Max
     scaleDown:
-      stabilizationWindowSeconds: 30
+      stabilizationWindowSeconds: 60
       policies:
         - type: Percent
-          value: 100
-          periodSeconds: 15
+          value: 30
+          periodSeconds: 30
       selectPolicy: Max
   metrics:
     - type: Resource
@@ -66,7 +66,7 @@ spec:
         name: cpu
         target:
           type: Utilization
-          averageUtilization: 70
+          averageUtilization: 78
 ---
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
@@ -78,22 +78,24 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: stress
-  minReplicas: 2
-  maxReplicas: 50
+  # stress는 anti-affinity로 파드당 노드1 → min=2면 전용노드 2대=baseline 3(ratio↑). baseline 2 정책상 min=1.
+  #   부하 시 HPA가 max까지 확장(각자 새 노드). turn.py가 실측으로 재확정.
+  minReplicas: 1
+  maxReplicas: 6
   behavior:
     scaleUp:
       stabilizationWindowSeconds: 0
       policies:
         - type: Pods
-          value: 10
+          value: 2
           periodSeconds: 15
       selectPolicy: Max
     scaleDown:
-      stabilizationWindowSeconds: 30
+      stabilizationWindowSeconds: 60
       policies:
         - type: Percent
-          value: 100
-          periodSeconds: 15
+          value: 30          # 보수적 (요요 방지)
+          periodSeconds: 30
       selectPolicy: Max
   metrics:
     - type: Resource
@@ -101,4 +103,5 @@ spec:
         name: cpu
         target:
           type: Utilization
-          averageUtilization: 60
+          # util 70%: 노드당 1파드라 부하 늘면 노드 추가로 대응
+          averageUtilization: 55

@@ -1,10 +1,14 @@
+# PDB: maxUnavailable:1 (minAvailable:1 아님).
+#   ★ minAvailable:1 + 파드 1개짜리 앱 = 그 파드 퇴거 불가(un-evictable) → 카펜터가 그 노드를 못 비워
+#     잔여 파드가 남은 카펜터 노드가 안 죽음(비용 점수 감소). maxUnavailable:1이면 마지막 1개도
+#     옮길 수 있어 노드가 회수됨 + "한 번에 1개만 disrupt"로 가용성도 보호.
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
   name: user-pdb
   namespace: apdev
 spec:
-  minAvailable: 1
+  maxUnavailable: 1
   selector:
     matchLabels:
       app: user
@@ -15,7 +19,7 @@ metadata:
   name: product-pdb
   namespace: apdev
 spec:
-  minAvailable: 1
+  maxUnavailable: 1
   selector:
     matchLabels:
       app: product
@@ -26,7 +30,7 @@ metadata:
   name: stress-pdb
   namespace: apdev
 spec:
-  minAvailable: 1
+  maxUnavailable: 1
   selector:
     matchLabels:
       app: stress

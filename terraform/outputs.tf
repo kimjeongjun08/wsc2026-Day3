@@ -12,16 +12,12 @@ output "ecr_repos" {
   value = { for k, v in aws_ecr_repository.this : k => v.repository_url }
 }
 
-output "rds_endpoint" {
-  value = aws_db_instance.this.endpoint
-}
+# output "rds_endpoint" {
+#   value = aws_db_instance.this.endpoint
+# }
 
 output "s3_bucket" {
   value = aws_s3_bucket.images.bucket
-}
-
-output "alb_logs_bucket" {
-  value = aws_s3_bucket.alb_logs.bucket
 }
 
 output "ec2_instance_id" {

@@ -12,6 +12,9 @@ from datetime import datetime
 NAMESPACE = "apdev"
 APPS = ["user", "product", "stress"]
 MAX_LINES = 200
+PER_APP_STREAM_CAP = 4      # 앱당 동시 tail 파드 수 상한(스케일업 시 스레드 폭증→GIL 프리즈 방지)
+MAX_PARSE_PER_SEC = 120     # 파드당 초당 파싱 상한(초과분은 드레인만 → 과부하에도 UI 안 멈춤, stats는 근사)
+POD_REFRESH_SEC = 5         # 새로 뜬 파드 감지 주기
 
 SLO = {
     "user":    {"target_ms": 200, "max_ms": 5000},
@@ -103,9 +106,17 @@ def stream_to_buffer(pod_name, app, buffers, stats, lock):
         ["kubectl", "logs", "-f", "--tail", "50", pod_name, "-n", NAMESPACE],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
     )
+    win_start, parsed = time.time(), 0
     for line in proc.stdout:
         line = line.rstrip()
         if not line:
+            continue
+        # 과부하 방지: 초당 파싱 상한 초과분은 드레인만(파이프는 계속 읽어 backpressure 방지) → UI 프리즈 방지.
+        now = time.time()
+        if now - win_start >= 1.0:
+            win_start, parsed = now, 0
+        parsed += 1
+        if parsed > MAX_PARSE_PER_SEC:
             continue
         status, latency_ms, path, method = parse_gin_line(line)
         formatted = format_line(line)
@@ -372,6 +383,9 @@ def draw_dashboard(stdscr, stats, lock, height, width, C):
 
 
 def draw_logs(stdscr, buffers, lock, height, width, C, focus=-1, scroll=0, paused=False):
+    global _pause_len
+    if "_pause_len" not in globals():
+        _pause_len = {}
     apps = [APPS[focus]] if focus >= 0 else APPS
     panel_w = width // len(apps)
     for i, app in enumerate(apps):
@@ -383,7 +397,15 @@ def draw_logs(stdscr, buffers, lock, height, width, C, focus=-1, scroll=0, pause
         with lock:
             lines = list(buffers[app])
         avail = height - 3
-        end = len(lines) - scroll
+        # paused: 처음 pause한 시점의 lines 고정 (새 로그 무시)
+        if paused:
+            if app not in _pause_len:
+                _pause_len[app] = list(lines)  # 전체 복사 저장
+            lines = _pause_len[app]
+            end = max(0, len(lines) - scroll)
+        else:
+            _pause_len.pop(app, None)
+            end = len(lines)
         start = max(0, end - avail)
         end = max(start, end)
         visible = lines[start:end]
@@ -392,11 +414,11 @@ def draw_logs(stdscr, buffers, lock, height, width, C, focus=-1, scroll=0, pause
             y = j + 2
             if y >= height:
                 break
-            if "500" in line or '"5' in line:
+            if '"status":5' in line or '"status": 5' in line:
                 safe_addstr(stdscr, y, x, display, curses.color_pair(4))
-            elif "40" in line and ('"4' in line or "| 4" in line):
+            elif '"status":4' in line or '"status": 4' in line:
                 safe_addstr(stdscr, y, x, display, curses.color_pair(2))
-            elif "200" in line or "201" in line or '"2' in line:
+            elif '"status":2' in line or '"status": 2' in line:
                 safe_addstr(stdscr, y, x, display, curses.color_pair(5))
             else:
                 safe_addstr(stdscr, y, x, display)
@@ -443,6 +465,24 @@ def draw_raw(stdscr, buffers, lock, height, width, C, focus=-1, scroll=0, paused
                     try:
                         log = _json.loads(evt["message"])
                         req = log.get("httpRequest", {})
+                        # status: responseCodeSent 있으면 사용, 없으면 룰 기반 추정
+                        raw_code = log.get("responseCodeSent")
+                        if raw_code:
+                            status = str(raw_code)
+                        elif log.get("action") == "BLOCK":
+                            rule = log.get("terminatingRuleId", "")
+                            if "UnknownPath" in rule:
+                                status = "404"
+                            else:
+                                status = "403"
+                        elif log.get("action") == "ALLOW":
+                            status = "->app"
+                        else:
+                            status = "?"
+                        # 매칭 위치 추출 (QUERY_STRING, BODY, HEADER, URI 등)
+                        match_details = log.get("terminatingRuleMatchDetails", [])
+                        match_locations = [d.get("location", "") for d in match_details if d.get("location")]
+                        match_info = ",".join(match_locations) if match_locations else ""
                         reqs.append({
                             "action": log.get("action", "?"),
                             "ts": evt.get("timestamp", 0),
@@ -452,6 +492,8 @@ def draw_raw(stdscr, buffers, lock, height, width, C, focus=-1, scroll=0, paused
                             "country": req.get("country", "?"),
                             "headers": req.get("headers", []),
                             "rule": log.get("terminatingRuleId", "-"),
+                            "status": status,
+                            "match": match_info,
                         })
                     except Exception:
                         pass
@@ -482,25 +524,31 @@ def draw_raw(stdscr, buffers, lock, height, width, C, focus=-1, scroll=0, paused
         dt_str = datetime.fromtimestamp(r["ts"] / 1000).strftime("%H:%M:%S") if r["ts"] else "?"
         action_color = curses.color_pair(4) if r["action"] == "BLOCK" else curses.color_pair(5)
 
-        line1 = f" {r['action']:<6} {dt_str} {r['method']:<6} {r['uri'][:55]:<55} {r['ip']:<16} {r['rule'][:20]}"
+        line1 = f" {r['action']:<6} {dt_str} {r['method']:<6} {r['uri'][:45]:<45} {r['ip']:<16} {r['rule'][:18]:<18} {r.get('status') or '':<5} {r.get('match','')}"
         safe_addstr(stdscr, y, 1, line1[:width-2], action_color)
         y += 1
         if y >= height - 1:
             break
 
-        hdrs = {h.get("name","").lower(): h.get("value","") for h in r.get("headers", [])}
-        hdr_parts = []
-        for k in ["user-agent", "content-type", "authorization", "x-hacker", "x-attack", "x-forwarded-for"]:
-            if k in hdrs:
-                hdr_parts.append(f"{k}={hdrs[k][:30]}")
-        if not hdr_parts:
-            hdr_parts = [f"{h.get('name','')}={h.get('value','')[:20]}" for h in r.get("headers", [])[:4]]
-        hdr_line = "   └ " + " | ".join(hdr_parts)
-        if any(bad in hdr_line.lower() for bad in ["x-hacker", "x-attack", "authorization", "x-forwarded"]):
-            safe_addstr(stdscr, y, 1, hdr_line[:width-2], curses.color_pair(2))
-        else:
-            safe_addstr(stdscr, y, 1, hdr_line[:width-2])
-        y += 1
+        # 모든 헤더 세로로 표시 (모니터링 툴 스타일)
+        all_headers = r.get("headers", [])
+        bad_keys = {"x-hacker", "x-attack", "x-forwarded-for", "authorization"}
+        for h in all_headers:
+            if y >= height - 1:
+                break
+            k = h.get("name", "").lower()
+            v = h.get("value", "")[:60]
+            is_bad = k in bad_keys
+            hdr_str = f"      {k}: {v}"
+            if is_bad:
+                safe_addstr(stdscr, y, 1, hdr_str[:width-2], curses.color_pair(4) | curses.A_BOLD)
+            else:
+                safe_addstr(stdscr, y, 1, hdr_str[:width-2], curses.color_pair(6) if curses.has_colors() else 0)
+            y += 1
+        # 구분선
+        if y < height - 1:
+            safe_addstr(stdscr, y, 1, "   " + "─" * min(width - 6, 80))
+            y += 1
 
 
 def draw_pods(stdscr, height, width, C):
@@ -611,6 +659,34 @@ def draw_pods(stdscr, height, width, C):
             y += 1
 
 
+def pod_manager(buffers, stats, lock):
+    """주기적으로 현재 파드를 조회 → 새로 뜬 파드엔 streamer 추가, 죽은 건 정리.
+       ★스케일업으로 뜬 파드를 자동 감지(예전엔 시작 시점 파드만 봄). 앱당 PER_APP_STREAM_CAP개까지만
+       tail(스레드 폭증→GIL 프리즈 방지). 이미 tail 중인 파드 우선 유지(churn 방지)."""
+    active = {}  # pod_name -> thread
+    while True:
+        try:
+            pods = get_pods()
+        except Exception:
+            pods = []
+        by_app = defaultdict(list)
+        for name, app in pods:
+            if app in APPS:
+                by_app[app].append(name)
+        for name in list(active):          # 죽은 streamer(파드 삭제 시 kubectl logs -f 종료) 정리
+            if not active[name].is_alive():
+                del active[name]
+        for app in APPS:                   # 앱당 cap까지 보장, 기존 active 우선
+            names = by_app.get(app, [])
+            ordered = [n for n in names if n in active] + [n for n in names if n not in active]
+            for name in ordered[:PER_APP_STREAM_CAP]:
+                if name not in active:
+                    t = threading.Thread(target=stream_to_buffer, args=(name, app, buffers, stats, lock), daemon=True)
+                    t.start()
+                    active[name] = t
+        time.sleep(POD_REFRESH_SEC)
+
+
 def main(stdscr):
     pods = get_pods()
     if not pods:
@@ -629,10 +705,8 @@ def main(stdscr):
         "paths": defaultdict(lambda: {"total": 0, "2xx": 0, "4xx": 0, "5xx": 0}),
     } for app in APPS}
 
-    for name, app in pods:
-        if app in APPS:
-            t = threading.Thread(target=stream_to_buffer, args=(name, app, buffers, stats, lock), daemon=True)
-            t.start()
+    # 동적 파드 감지 매니저(새 파드 자동 tail + 앱당 상한) — 시작 시점 파드만 보던 문제 해결.
+    threading.Thread(target=pod_manager, args=(buffers, stats, lock), daemon=True).start()
 
     draw(stdscr, buffers, stats, lock)
 

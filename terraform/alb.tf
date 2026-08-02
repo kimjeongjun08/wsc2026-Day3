@@ -26,11 +26,6 @@ resource "aws_lb" "this" {
   security_groups    = [aws_security_group.alb.id]
   subnets            = aws_subnet.public[*].id
 
-  access_logs {
-    bucket  = aws_s3_bucket.alb_logs.bucket
-    enabled = true
-  }
-
   tags = { Name = "${local.name}-alb" }
 }
 
@@ -41,6 +36,8 @@ resource "aws_lb_target_group" "user" {
   vpc_id      = aws_vpc.this.id
   target_type = "ip"
   deregistration_delay = 30
+  # 처리 중 요청이 적은 타겟으로 라우팅 — 느린 요청에 물린 파드 회피
+  load_balancing_algorithm_type = "least_outstanding_requests"
 
   health_check {
     path                = "/healthcheck"
@@ -61,6 +58,7 @@ resource "aws_lb_target_group" "product" {
   vpc_id      = aws_vpc.this.id
   target_type = "ip"
   deregistration_delay = 30
+  load_balancing_algorithm_type = "least_outstanding_requests"
 
   health_check {
     path                = "/healthcheck"
@@ -81,14 +79,17 @@ resource "aws_lb_target_group" "stress" {
   vpc_id      = aws_vpc.this.id
   target_type = "ip"
   deregistration_delay = 30
+  # 핵심: length 큰 요청(수 초~수십 초)에 물린 파드로 새 요청이 가지 않게
+  # → 가벼운 요청(SLO 통과 가능 클래스)이 무거운 요청 뒤에 줄 서는 것 방지
+  load_balancing_algorithm_type = "least_outstanding_requests"
 
   health_check {
     path                = "/healthcheck"
     port                = "8080"
     healthy_threshold   = 2
-    unhealthy_threshold = 2
+    unhealthy_threshold = 3
     interval            = 10
-    timeout             = 3
+    timeout             = 5
   }
 
   tags = { Name = "${local.name}-stress" }

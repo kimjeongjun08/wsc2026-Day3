@@ -1,196 +1,248 @@
-# ⚠️ 시작 전 필수: `terraform/application/{user,product,stress}/` 바이너리 + `terraform/application/load_user.dump` 파일을 실제 대회용으로 교체하세요!
+# 🔴🔴🔴 시작 전 반드시 할 것 🔴🔴🔴
+
+## ⚠️ 0. 환경변수 — 앱/dump 바꾸면 **제일 먼저** 확인! ⚠️
+
+> **앱 3개는 DB 접속에 환경변수 5개를 씀** (`terraform/k8s/configmap.yaml`, terraform이 자동 주입):
+> `MYSQL_USER` · `MYSQL_PASSWORD` · `MYSQL_HOST` · `MYSQL_PORT` · `MYSQL_DBNAME`(=`dev`)
+>
+> **🚨 앱 바이너리나 dump를 바꾸면 = 이 5개가 새 앱/DB와 맞는지 반드시 확인.**
+> - `MYSQL_DBNAME`이 dump가 만드는 DB명과 다르면 → **앱이 DB 접속 실패 → 파드 전부 죽음 → 전멸(0점)**
+> - 새 앱이 **다른 env 이름/추가 변수**를 요구하면 → `configmap.yaml`에 반영
+> - 확인법: 배포 후 `kubectl get pods -n apdev` 가 전부 **Running**(CrashLoop 아님)이면 접속 OK
+>
+> **➡ 앱/dump 교체 = env 체크는 세트다. 잊으면 전멸.**
 
 ---
 
-# WSC2026 Day3 - 클라우드컴퓨팅 3과제
+## 1. `terraform apply` 전에 4개 파일을 대회용으로 교체
 
-## 아키텍처 개요
-
-```
-CloudFront (WAF) → ALB → EKS (HPA + Karpenter) → RDS Proxy → RDS MySQL
-                                ↑
-                         S3 (images)
-```
-
-- **CloudFront**: CDN + WAF (화이트리스트 default block)
-- **ALB**: user/product/stress 라우팅 (deregistration delay 30s)
-- **EKS**: MNG 1대 고정 + Karpenter 오토스케일 (budget 100%)
-- **RDS**: MySQL 8.0, Multi-AZ, RDS Proxy 연결 풀링 (90%/30%)
-- **S3**: images (앱 동작), setup (배포 임시, 완료 후 삭제), alb-logs (ALB 로그)
-
----
-
-## 대회 당일 교체 파일
-
-| 파일 | 위치 |
+| 교체할 파일 | 위치 |
 |---|---|
-| user 바이너리 | `terraform/application/user/user` |
-| product 바이너리 | `terraform/application/product/product` |
-| stress 바이너리 | `terraform/application/stress/stress` |
-| DB dump | `terraform/application/load_user.dump` |
+| **user 바이너리** | `terraform/application/user/user` |
+| **product 바이너리** | `terraform/application/product/product` |
+| **stress 바이너리** | `terraform/application/stress/stress` |
+| **DB 덤프** | `terraform/application/load_user.dump` |
+
+> 이걸 안 바꾸고 apply하면 연습용 앱/데이터로 배포됩니다. **apply 전에 무조건 교체.**
+
+## 2. 절대 하지 말 것
+
+- ❌ **노드는 `t3.medium`만** 사용 (다른 타입 = 감점)
+- ❌ **삽입한 DB 데이터 임의 수정/삭제 금지** (임의 데이터 삽입 시 성능 저하 = 감점)
+- ❌ **채점 플랫폼 엔드포인트는 프로토콜+주소만** — 경로 X
+  - ✅ `https://example.org`   ❌ `example.org`   ❌ `https://example.org/v1/`
+- ⚠ **`update_waf.py`(헤더 이름 화이트리스트)는 기본 미사용** — 헤더 이름 화이트리스트는 '미래의 정상 헤더'라는 잔여원. 정상차단 0을 원하면 **켜지 말 것**(base waf.tf만으로 정상 100% 통과 + 비정상 차단 완결). 굳이 켰다 정상 막히면 `--remove`
+- ❌ DB 스펙 고정: identifier `apdev-rds-instance`, `db.t3.micro`, Multi-AZ
+
+## 3. 스펙이 바뀌면? (종이로 API/필드 변경 공지 시) — 쉽게
+
+**원칙: 안 바뀌면 아무것도 안 건드림. 바뀐 것만 아래 표대로 맞추면 끝.**
+
+| 바뀐 것 | 고칠 곳 (이것만) |
+|---|---|
+| **필드 추가/이름변경** (바디·쿼리) | ① `tools/turn.py` 요청(L148~165) ② DB관련이면 `configmap.yaml` env ③ 형식검증 필드면 `waf.tf` regex(L35~39) |
+| **형식 변경** (id 숫자만 등) | `waf.tf` regex(L35~39) + turn.py seed값 |
+| **새 경로 추가** (/v1/xxx) | `waf.tf` locals(L26) + `alb.tf` 라우팅 + turn.py |
+| **앱/dump 교체** | 위 **§0 환경변수 체크** (제일 중요) |
+
+**🚨 급하면 (정상이 막히는데 시간 없음):** `terraform/waf.tf` **L106** 딱 한 줄
+`default_action { block {} }` → **`allow {}`** 로 바꾸고 apply
+→ 정상 무조건 통과(가용성 방어), 공격은 시그니처+404로 계속 차단. **만점보다 가용성 먼저.**
+
+> 각 변경의 정확한 위치·복붙 스니펫은 **`SPEC_CHANGE_PLAYBOOK.md`** 참조. 위 표로 대부분 커버됨.
+
+---
+---
+
+# WSC2026 Day3 — 클라우드컴퓨팅 3과제
+
+## 아키텍처
+
+```
+CloudFront (WAF + product 캐싱) → ALB → EKS (HPA + Karpenter + scaler) → RDS Proxy → RDS MySQL
+                                                    ↑
+                                              S3 (images)
+```
+
+- **MNG 2대(t3.medium) 고정** + Karpenter 오토스케일(하드캡)
+- 스케일: **HPA(CPU) + Karpenter(노드)** 자립형 — turn.py가 준비시간에 SLO 지키는 최소비용 지점으로 보정. (scaler.py는 선택적 보조, 필수 아님)
+- **WAF**: 잔여 0 화이트리스트(default BLOCK) — **메서드+경로**만 검사(정상은 정의상 항상 만족 → 절대 안 막힘) + 공격 블랙리스트(query/body/헤더값) / 없는 경로 404 / 공격·잘못된 메서드 403
+- **캐싱**: product GET을 CloudFront 엣지에서 (TTL 1시간)
 
 ---
 
-## 준비 1시간: 인프라 구성
+## 순서 (이대로만 하면 됨)
 
-### 1. Terraform apply
+### ⓪ 사전 준비 (내 PC에 최초 1회 설치)
+
+**필수 CLI 4개**
+| 도구 | 용도 | 설치 |
+|---|---|---|
+| **Terraform** | 인프라 배포 | https://developer.hashicorp.com/terraform/install |
+| **AWS CLI v2** | terraform/kubectl 인증(EKS 토큰), kubeconfig | https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html |
+| **kubectl** | 모든 파이썬 툴이 클러스터 제어 | https://kubernetes.io/docs/tasks/tools/ |
+| **Python 3.9+ & pip** | 튜닝/WAF/모니터 툴 | https://www.python.org/downloads/ |
+
+> eksctl·helm은 **bastion EC2가 자동 설치**(Karpenter용)라 내 PC엔 불필요.
+
+**1) AWS 자격증명 설정** (한 번)
+```bash
+aws configure          # Access Key / Secret / region(예: ap-northeast-2) 입력
+aws sts get-caller-identity   # 신원 뜨면 OK
+```
+
+**2) 파이썬 패키지 설치**
+```bash
+cd wsc2026-Day3
+pip install -r requirements.txt      # aiohttp, boto3 (+dashboard용 flask)
+```
+> 핵심은 **aiohttp**(turn.py), **boto3**(update_waf.py). scaler.py는 표준 라이브러리라 설치 불필요.
+
+**3) kubectl을 클러스터에 연결** (apply 완료 후)
+```bash
+aws eks update-kubeconfig --name apdev-cluster --region <배포한 region>
+kubectl get nodes        # t3.medium 노드 뜨면 연결 OK
+```
+> ✅ **로컬 접근은 자동 설정됨** — terraform이 "apply를 실행한 IAM 신원"에 클러스터 관리자 access entry를 만들어 둠(eks.tf `caller`). 그래서 **aws-auth 손댈 필요 없음**.
+> ⚠ **조건**: kubectl 돌리는 PC의 `aws configure` 신원 = **terraform apply 돌린 신원**이어야 함(보통 같은 PC면 자동으로 동일).
+> ⚠ **bastion 삭제 시**: bastion은 별도 access entry라 지워도 로컬 접근에 영향 없음. 단, **지우기 전에 로컬에서 `kubectl get nodes`가 되는지 꼭 확인**하고 삭제할 것.
+
+---
+
+### ① Terraform apply (인프라 + 자동 배포)
 
 ```bash
 cd terraform
+terraform init
 terraform apply \
   -var="node_instance_type=t3.medium" \
   -var="db_instance_class=db.t3.micro" \
-  -var="db_allocated_storage=200"
+  -var="db_allocated_storage=500"
 ```
 
-완료 후:
+> `db_allocated_storage`: 연습은 200, **대회는 500+** (IOPS/처리량 확보). apply는 bastion EC2가 자동으로 DB 덤프 로드 + ECR 빌드/푸시 + k8s 배포까지 함.
+
 ```bash
-terraform output
-# endpoint          → CloudFront 엔드포인트
-# alb_dns           → ALB DNS
-# alb_logs_bucket   → ALB 로그 버킷명
+terraform output endpoint   # → CloudFront 엔드포인트 (이걸 채점 플랫폼에 입력)
 ```
 
-### 2. setup.sh 완료 확인
+### ② 배포 완료 확인
 
 ```bash
-# bastion EC2 접속 (Session Manager)
+# bastion EC2 접속 (Session Manager) 후
 tail -f /home/ec2-user/setup.log
-# === SETUP COMPLETE === 출력까지 대기
+# "=== SETUP COMPLETE ===" 나올 때까지 대기
+
+# 파드 확인
+kubectl get pods -n apdev     # user/product/stress 전부 Running
+kubectl get nodes             # t3.medium 2대 Ready
 ```
 
-### 3. Preflight 검증
+### ③ WAF + 캐싱 검증 (curl)
+
+```bash
+EP=<CloudFront endpoint>
+
+# 정상 GET → 통과 (200)
+curl -s -o /dev/null -w "%{http_code}\n" "$EP/v1/product?id=dbdump500001&requestid=1&uuid=1"
+
+# product GET 2번 → 2번째 X-Cache: Hit 확인 (캐싱 작동)
+curl -sI "$EP/v1/product?id=dbdump500001&requestid=1&uuid=1" | grep -i x-cache
+curl -sI "$EP/v1/product?id=dbdump500001&requestid=1&uuid=1" | grep -i x-cache
+
+# 없는 경로 → 404
+curl -s -o /dev/null -w "%{http_code}\n" "$EP/v1/none"
+
+# 공격 패턴 → 403
+curl -s -o /dev/null -w "%{http_code}\n" "$EP/v1/product?id=1%20union%20select%201"
+```
+
+### ④ 튜닝 (⚠ 준비시간 1시간 안에 실행 — 채점 중엔 못 돌림)
 
 ```bash
 cd tools
-python preflight.py <CloudFront endpoint>
-# 인프라 + API + WAF 전체 헬스체크
-# ✅ 전체 통과 확인 후 다음 단계
+python turn.py <CloudFront endpoint>
+# 물어보는 것: "카펜터 추가 노드 상한 (기본 4)" → 엔터(= 비용 천장 = stress 버스트 몇 노드까지 허용)
+# → 측정(CloudFront=채점 실제 경로) → 리소스/HPA/Karpenter 계산 → 적용
+# → 단일 가벼운 검증(참고용, 값 안 바꿈) → 노드 2대로 수렴 → 프리즈
+# → 채점 2시간은 이 정책으로 HPA/Karpenter가 자율 대응
 ```
 
-### 4. Autotune (HPA/Karpenter 튜닝)
+> **핵심**: turn.py는 **준비시간에만** 돌린다(채점 중 재튜닝 불가). **단일파드 깨끗한 실측**으로 파드 특성(cpu/rps/지연)을 재고 → HPA·리소스·Karpenter 정책을 산출·적용 → 프리즈. 재검증/에스컬레이션 없음(부하로 값을 안 흔듦). 노드 타입 자동 감지. **AWS CLI 자격증명 필요**(kubectl의 EKS 인증에 쓰임).
+
+> **측정 경로**: **CloudFront(채점기가 실제로 때리는 경로)**로 측정 → user/stress 지연이 CDN 포함 실제값. product는 캐시라 이 경로에선 파드 부하가 안 잡히지만, 채점에서도 캐시라 부하가 낮음 → product는 **io 고정정책(request 100m + util 80)**으로 안정화(폭증 방지). 별도 ALB 조회 불필요.
+>
+> **stress**: 요청 1개가 코어를 다 씀(CPU-hog) → util 목표를 `실사용/request`로 측정기반 산정 → HPA가 **동시요청 수만큼만** 파드 확보(약한 부하 폭증 X, 버스트만 스케일). 성능(1s)은 하드웨어 한계(2코어), 가용성(5s)은 이 정책으로 최대화.
+
+### ⑤ 채점 2시간 — 자율 운영
 
 ```bash
-python autotune.py <CloudFront endpoint>
-# 노드 타입, 최대 노드 수 입력
-# → 워밍업 → 계산 → 적용 → 검증 → MNG 1대로 수렴
+# 기본: ④에서 보정된 HPA(CPU)+Karpenter+warm baseline이 부하 따라 자율 대응.
+#   → 정상/완만한 부하는 이걸로 충분 (성능·비용 자동균형).
+
+# (권장) 랜덤 급증 스파이크 방어 — scaler.py 프론트러너
+python scaler.py <CloudFront endpoint>
+#   · 능동 프로브로 레이턴시 직접 측정(앱 바이너리 무관, 로그 장님 없음)
+#   · 심각 스파이크 감지 → Karpenter 노드부팅을 HPA(15s)보다 ~13초 먼저 유발 → 큐잉 단축
+#   · 가벼운 부하는 MNG 이내(노드 0), 스파이크 끝나면 감쇠 → 노드 회수(비용 회복)
+#   · ⚠ 반드시 endpoint 인자 줄 것(없으면 로그기반=앱 바뀌면 장님)
+
+# (선택) 모니터링
+python dashboard.py    # 웹 대시보드
+python podlog.py       # 터미널 UI (로그/파드/WAF)
 ```
 
 ---
 
-## 채점 2시간: 트래픽 수신
+## 툴 정리
 
-### 실행 순서 (터미널 3~4개)
-
-**터미널 1: WAF 헤더 화이트리스트 (트래픽 시작 직후 1회)**
-```bash
-python update_waf.py
-# 90초 헤더 수집 → 화이트리스트 적용 → 완료 후 종료
-```
-
-**터미널 2: scaler (2시간 내내 실행)**
-```bash
-python scaler.py
-```
-역할:
-- 1초마다: 파드별 응답시간/5xx 감지 → 나쁜 파드 교체
-- 30초마다: 카펜터 노드 파드 1~2개 남으면 MNG로 이동 → 노드 정리
-- 60초마다: p95 기반 HPA util 자동 조정 (adaptive, SLO 수렴)
-- Pending 파드 감지 → 오래된 파드 교체로 자리 확보
-
-**터미널 3: 모니터링 (선택)**
-```bash
-python dashboard.py    # http://localhost:9090 (웹 대시보드)
-# 또는
-python podlog.py       # 터미널 UI (로그 + WAF + 파드 상태)
-```
-
----
-
-## 채점 기준 (총 40점)
-
-| 항목 | 배점 | 기준 |
+| 툴 | 용도 | 언제 |
 |---|---|---|
-| 1. 비정상 요청 처리 | 4점 | Image/Exception 처리율 50~90% |
-| 2. 고가용성/안정성 | 12점 | user/product/stress availability 30~90% |
-| 3. 성능 효율성 | 12점 | user/product ≤0.2s, stress ≤1.0s 처리율 30~90% |
-| 4. 비용 최적화 | 12점 | cost ratio 0.5~3.75 (모든 API performance 30% 이상 조건) |
+| `turn.py <endpoint>` | 측정+부하램프 자동보정(HPA/Karpenter를 SLO 최소비용에 수렴) | **준비시간 1회** (채점 중 불가) |
+| `scaler.py <endpoint>` | (권장) 랜덤 스파이크 프론트러너 — 능동 프로브+노드 조기유발 | 채점 2시간, 급증 대비 |
+| `dashboard.py` / `podlog.py` | 모니터링 | 선택 |
+| `update_waf.py` | 헤더 이름 화이트리스트(잔여원) | **기본 미사용**. 잔여 감수 시만. 해제 `--remove` |
 
-**전략**: 성능(24점) > 비용(12점) → 성능 우선, 트래픽 없을 때 노드 최소화
+**스케일 2층 구조**:
+1. **기반(자립)** — 준비시간에 turn.py가 **HPA(CPU)+Karpenter+warm baseline**을 부하 램프로 "SLO 지키는 최소비용" 정책에 수렴시켜 프리즈. 채점 중 정상/완만 부하는 이걸로 자율 대응.
+2. **스파이크 방어(권장)** — `scaler.py <endpoint>`가 능동 프로브로 레이턴시를 직접 재다가 **심각 급증** 시 Karpenter 노드를 HPA보다 ~13초 먼저 유발(가벼운 부하엔 노드 0, 끝나면 감쇠). 기반이 못 잡는 랜덤 급증만 보완.
 
 ---
 
-## 툴 목록
+## 채점 기준 (40점)
 
-| 툴 | 용도 | 실행 시점 |
+| 항목 | 배점 | 대응 |
 |---|---|---|
-| `preflight.py` | 인프라+API+WAF 전체 헬스체크 | setup 완료 후, autotune 전 |
-| `autotune.py` | HPA/Karpenter 최적값 계산+적용 | 준비 시간 (1회) |
-| `update_waf.py` | WAF 헤더 화이트리스트 적용 | 채점 트래픽 시작 직후 (1회) |
-| `scaler.py` | 파드 교체 + adaptive util + 노드 정리 | 채점 2시간 내내 |
-| `dashboard.py` | 웹 대시보드 (ALB/RDS/WAF/HPA) | 선택 |
-| `podlog.py` | 터미널 UI (로그+WAF+파드 상태) | 선택 |
+| 비정상 요청 처리 | 4 | WAF (비정상 403 / 없는 경로 404) |
+| 가용성 | 12 | MNG 2대 분산 + readiness gate + request 격리 |
+| 성능 | 12 | product 캐싱 + user warm 상주 + stress 2코어 버스트 + 부하램프 보정 |
+| 비용 | 12 | MNG-fit 상주(예산 내 노드 0) + Karpenter 하드캡 + churn 완화 |
+
+> 가용성(12) ≫ 비정상(4) → **정상 트래픽 절대 안 막힘** 최우선.
 
 ---
 
-## scaler.py 상세 기준
-
-**파드 교체 (30초 윈도우):**
-| 앱 | 트리거 |
-|---|---|
-| user/product | 평균 ≥ 0.4초 OR 5xx ≥ 10개 |
-| stress | 평균 ≥ 2.0초 OR 5xx ≥ 10개 |
-
-**adaptive HPA util 조정 (60초 주기):**
-- p95 > SLO (user/product 0.2초, stress 1.0초) → util -5%
-- p95 < SLO × 80% → util +5%
-- 안정 3회 연속 → 수렴 완료 (트래픽 패턴 바뀌면 재조정)
-- util 범위: user/product 40~85%, stress 30~70%
-
----
-
-## k6 부하 테스트 (연습용)
+## 문제 생기면
 
 ```bash
-cd test/load
-k6 run -e BASE_URL=<endpoint> k6.js
+# WAF가 정상 트래픽 막는 것 같으면 — 어떤 룰에 걸렸는지 확인
+#   AWS 콘솔 → WAF → apdev-cf-acl → Sampled requests
+
+# scaler 로그가 안 뜨면 (파드 로그 포맷 문제)
+kubectl logs -n apdev <pod> --tail=5    # status/dur_ms 있는지 확인
+
+# 노드가 안 줄어들 때 → Karpenter가 20초 뒤 자동 정리 (consolidation)
+kubectl get nodes
+
+# HPA 상태
+kubectl get hpa -n apdev
 ```
 
 ---
 
-## 주요 변수 (terraform.tfvars)
+## 참고
 
-| 변수 | 설명 |
-|---|---|
-| `node_instance_type` | EKS 노드 타입 (필수) |
-| `db_instance_class` | RDS 인스턴스 타입 (필수) |
-| `db_allocated_storage` | RDS 스토리지 GB (필수) |
-| `node_max_size` | MNG 최대 노드 수 (기본 4) |
-
----
-
-## 트러블슈팅
-
-**카펜터 노드가 안 사라질 때**
-```bash
-kubectl get pods -A --field-selector spec.nodeName=<노드명>
-# 파드 있으면: scaler.py가 30초 내 정리
-# 안되면 수동: kubectl cordon + kubectl drain --ignore-daemonsets --force
-```
-
-**HPA 스케일 안 될 때**
-```bash
-kubectl describe hpa -n apdev
-# autotune 재실행 권장
-```
-
-**WAF 403 지속**
-```bash
-# BlockUnknownHeaders 룰 제거 후 update_waf.py 재실행
-```
-
-**5xx 발생 시**
-```bash
-# scaler.py가 자동으로 문제 파드 교체
-# 대시보드에서 어떤 파드인지 확인: dashboard.py → Errors 탭
-```
+- **엔드포인트는 http가 https보다 빠름** — 튜닝/채점 입력 시 참고
+- 노드 타입 바뀌어도(m5/xlarge 등) turn.py가 CPU/메모리 자동 감지해 대응
+- WAF(base, waf.tf) = **잔여 0 화이트리스트**: 정상이 정의상 항상 만족하는 **메서드+경로**만 허용(default block) → 정상 100% 통과(증명 가능). 공격은 query/body/**모든 헤더 값**의 패턴 블랙리스트로 403, 없는경로 404. CT/바디내용/헤더이름은 '미래 정상 변형'을 막는 잔여원이라 **안 봄**.
+- `update_waf.py`(헤더 이름 화이트리스트, 커버리지 게이팅판)는 **잔여원이라 기본 미사용**. 헤더 이름까지 조이고 싶고 소량 잔여를 감수할 때만 실행(이상 시 `--remove`). 만점 안전 우선이면 **켜지 말 것**.

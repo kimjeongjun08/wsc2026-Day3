@@ -49,7 +49,7 @@ resource "aws_s3_object" "app_binaries" {
 
 # Upload static k8s files to S3 (setup 버킷)
 resource "aws_s3_object" "k8s_static" {
-  for_each = toset(["service.yaml", "hpa.yaml", "pdb.yaml", "iam_policy.json", "install-karpenter.sh"])
+  for_each = toset(["service.yaml", "hpa.yaml", "pdb.yaml", "iam_policy.json", "install-karpenter.sh", "priorityclass.yaml"])
   bucket   = aws_s3_bucket.setup.bucket
   key      = "k8s/${each.value}"
   source   = "${path.module}/k8s/${each.value}"

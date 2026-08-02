@@ -2,6 +2,8 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: apdev
+  labels:
+    elbv2.k8s.aws/pod-readiness-gate-inject: enabled
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -13,12 +15,22 @@ spec:
   selector:
     matchLabels:
       app: user
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   template:
     metadata:
       labels:
         app: user
     spec:
-      terminationGracePeriodSeconds: 30
+      terminationGracePeriodSeconds: 35
+      priorityClassName: high-priority
+      dnsConfig:
+        options:
+          - name: ndots
+            value: "2"
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname
@@ -28,7 +40,7 @@ spec:
               app: user
       containers:
         - name: user
-          image: ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/PROJECT-user:latest
+          image: 003150130236.dkr.ecr.ap-northeast-2.amazonaws.com/apdev-user:latest
           ports:
             - containerPort: 8080
           envFrom:
@@ -43,12 +55,12 @@ spec:
               path: /healthcheck
               port: 8080
             failureThreshold: 10
-            periodSeconds: 3
+            periodSeconds: 2
           readinessProbe:
             httpGet:
               path: /healthcheck
               port: 8080
-            periodSeconds: 5
+            periodSeconds: 3
             failureThreshold: 2
             successThreshold: 1
           livenessProbe:
@@ -57,11 +69,10 @@ spec:
               port: 8080
             periodSeconds: 30
             failureThreshold: 5
-            timeoutSeconds: 5
           resources:
             requests:
-              cpu: 100m       # ← 대회 당일 인스턴스 타입에 맞게 조정
-              memory: 128Mi
+              cpu: 30m
+              memory: 32Mi
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -73,12 +84,22 @@ spec:
   selector:
     matchLabels:
       app: product
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   template:
     metadata:
       labels:
         app: product
     spec:
-      terminationGracePeriodSeconds: 30
+      terminationGracePeriodSeconds: 35
+      priorityClassName: high-priority
+      dnsConfig:
+        options:
+          - name: ndots
+            value: "2"
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname
@@ -88,7 +109,7 @@ spec:
               app: product
       containers:
         - name: product
-          image: ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/PROJECT-product:latest
+          image: 003150130236.dkr.ecr.ap-northeast-2.amazonaws.com/apdev-product:latest
           ports:
             - containerPort: 8080
           envFrom:
@@ -103,12 +124,12 @@ spec:
               path: /healthcheck
               port: 8080
             failureThreshold: 10
-            periodSeconds: 3
+            periodSeconds: 2
           readinessProbe:
             httpGet:
               path: /healthcheck
               port: 8080
-            periodSeconds: 5
+            periodSeconds: 3
             failureThreshold: 2
             successThreshold: 1
           livenessProbe:
@@ -117,11 +138,10 @@ spec:
               port: 8080
             periodSeconds: 30
             failureThreshold: 5
-            timeoutSeconds: 5
           resources:
             requests:
-              cpu: 100m       # ← 대회 당일 인스턴스 타입에 맞게 조정
-              memory: 128Mi
+              cpu: 30m
+              memory: 32Mi
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -133,12 +153,22 @@ spec:
   selector:
     matchLabels:
       app: stress
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   template:
     metadata:
       labels:
         app: stress
     spec:
-      terminationGracePeriodSeconds: 30
+      terminationGracePeriodSeconds: 35
+      priorityClassName: normal-priority
+      dnsConfig:
+        options:
+          - name: ndots
+            value: "2"
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname
@@ -148,9 +178,12 @@ spec:
               app: stress
       containers:
         - name: stress
-          image: ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/PROJECT-stress:latest
+          image: 003150130236.dkr.ecr.ap-northeast-2.amazonaws.com/apdev-stress:latest
           ports:
             - containerPort: 8080
+          env:
+            - name: GOMAXPROCS
+              value: "0"
           envFrom:
             - configMapRef:
                 name: app-config
@@ -163,12 +196,12 @@ spec:
               path: /healthcheck
               port: 8080
             failureThreshold: 10
-            periodSeconds: 3
+            periodSeconds: 2
           readinessProbe:
             httpGet:
               path: /healthcheck
               port: 8080
-            periodSeconds: 5
+            periodSeconds: 3
             failureThreshold: 2
             successThreshold: 1
           livenessProbe:
@@ -177,11 +210,11 @@ spec:
               port: 8080
             periodSeconds: 30
             failureThreshold: 5
-            timeoutSeconds: 5
           resources:
             requests:
-              cpu: 250m       # ← stress는 CPU 많이 먹으니 높게
-              memory: 256Mi
+              cpu: 100m
+              memory: 64Mi
             limits:
-              cpu: "1"        # ← 격리: 노드 CPU의 절반 이하로 제한
-              memory: 512Mi
+              cpu: 1500m
+              memory: 256Mi
+

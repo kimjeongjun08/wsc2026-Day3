@@ -36,6 +36,31 @@ resource "aws_cloudfront_cache_policy" "images" {
   }
 }
 
+# product GET 캐시 정책: 캐시키 = query "id"만 (requestid/uuid 무시 → 동일 id 요청 캐시 적중)
+# 문제지: "동일 id 빈번 요청 + 정보 변동 거의 없음" → 캐싱이 의도된 설계.
+# TTL 길게(1시간): 10만 개 id에 요청이 분산돼도 반복 요청이 캐시에 남아있게 → 적중률↑.
+#   안전: 채점은 상태코드+레이턴시만 봄 + 정보 변동 거의 없음 + 새 상품은 첫 GET에서 캐시(stale 아님)
+#         + 에러 캐싱 1초(custom_error_response)라 생성 직후 404 문제없음.
+resource "aws_cloudfront_cache_policy" "product" {
+  name        = "${local.name}-product"
+  min_ttl     = 1
+  default_ttl = 3600
+  max_ttl     = 3600
+
+  parameters_in_cache_key_and_forwarded_to_origin {
+    enable_accept_encoding_brotli = true
+    enable_accept_encoding_gzip   = true
+    cookies_config { cookie_behavior = "none" }
+    headers_config { header_behavior = "none" }
+    query_strings_config {
+      query_string_behavior = "whitelist"
+      query_strings {
+        items = ["id"]
+      }
+    }
+  }
+}
+
 # Origin request policy: 모든 쿼리스트링/헤더 전달 (ALB pass-through)
 resource "aws_cloudfront_origin_request_policy" "all_viewer" {
   name = "${local.name}-all-viewer"
@@ -91,6 +116,18 @@ resource "aws_cloudfront_distribution" "this" {
     }
   }
 
+  # /v1/product → GET만 캐시(id별), POST/PUT는 통과(cached_methods=GET/HEAD라 자동)
+  ordered_cache_behavior {
+    path_pattern             = "/v1/product"
+    target_origin_id         = "alb"
+    viewer_protocol_policy   = "allow-all"
+    allowed_methods          = ["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"]
+    cached_methods           = ["GET", "HEAD"]
+    compress                 = true
+    cache_policy_id          = aws_cloudfront_cache_policy.product.id
+    origin_request_policy_id = aws_cloudfront_origin_request_policy.all_viewer.id
+  }
+
   # default → ALB pass-through (캐시 비활성화)
   default_cache_behavior {
     target_origin_id         = "alb"
@@ -100,6 +137,16 @@ resource "aws_cloudfront_distribution" "this" {
     compress                 = true
     cache_policy_id          = "4135ea2d-6df8-44a3-9df3-4b5a84be39ad" # CachingDisabled managed policy
     origin_request_policy_id = aws_cloudfront_origin_request_policy.all_viewer.id
+  }
+
+  # 에러 응답 캐싱 최소화: 생성 직후(POST) GET이 이전 404를 물지 않게 (가용성 보호)
+  custom_error_response {
+    error_code            = 404
+    error_caching_min_ttl = 1
+  }
+  custom_error_response {
+    error_code            = 403
+    error_caching_min_ttl = 1
   }
 
   restrictions {

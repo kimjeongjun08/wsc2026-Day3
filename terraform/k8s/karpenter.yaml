@@ -23,14 +23,17 @@ spec:
           operator: In
           values: ["${node_instance_type}"]
       expireAfter: 720h
+  # 하드캡: 카펜터 노드 5대분 (t3.medium 2vCPU × 5) — 총 노드 = MNG 2 + 5 = 7
   limits:
-    cpu: "12"
-    memory: 24Gi
+    cpu: "10"
+    memory: 20Gi
   disruption:
     consolidationPolicy: WhenEmptyOrUnderutilized
     consolidateAfter: 20s
     budgets:
       - nodes: "100%"
+# stress 격리는 별도 노드풀(taint) 대신 deploy.yaml의 pod anti-affinity로 처리 →
+#   stress가 user/product와 같은 노드에 못 앉아 노드를 독차지(2코어 확보). 단일 풀로 baseline 2대 유지.
 ---
 apiVersion: karpenter.k8s.aws/v1
 kind: EC2NodeClass

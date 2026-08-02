@@ -1,0 +1,15 @@
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: high-priority
+value: 1000
+globalDefault: false
+description: "user/product - 높은 우선순위"
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: normal-priority
+value: 500
+globalDefault: true
+description: "stress - 일반 우선순위 (리소스 부족 시 먼저 퇴거)"
