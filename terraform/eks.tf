@@ -129,6 +129,44 @@ resource "aws_eks_addon" "metrics_server" {
   resolve_conflicts_on_update = "OVERWRITE"
 }
 
+# ★MNG용 Launch Template — kubelet maxPods를 올리기 위해 필요하다.
+#   io 앱(user/product)은 상시 켜진 MNG 노드에 패킹된다. 그런데 노드당 파드 수가
+#   ENI 개수로 제한되면(t3.medium 17파드) 시스템 파드 6~8개를 빼고 앱은 9~11파드에서
+#   막힌다 → 나머지가 Pending → 카펜터가 노드를 만든다.
+#   즉 CPU는 남는데 노드만 늘어나 비용이 깎이고, 부팅 60초 동안 성능도 깎인다.
+#   ★setup.sh의 ENABLE_PREFIX_DELEGATION(IP 확보)과 이 maxPods(kubelet 상한)가
+#     한 쌍이다. 둘 다 있어야 파드가 실제로 늘어난다.
+#   ★Bottlerocket은 user_data가 TOML이고, EKS가 자기 부트스트랩 설정과 병합한다.
+#     그래서 max-pods만 지정하면 클러스터 조인은 EKS가 알아서 처리한다.
+#   ★disk_size는 node_group에 둘 수 없다(launch template과 충돌) → 여기로 옮긴다.
+resource "aws_launch_template" "mng" {
+  name_prefix = "${local.name}-mng-"
+
+  block_device_mappings {
+    device_name = "/dev/xvda"
+    ebs {
+      volume_size           = 20
+      volume_type           = "gp3"
+      delete_on_termination = true
+    }
+  }
+
+  user_data = base64encode(<<-TOML
+    [settings.kubernetes]
+    max-pods = 110
+  TOML
+  )
+
+  tag_specifications {
+    resource_type = "instance"
+    tags          = { Name = "${local.name}-node" }
+  }
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
 # Managed Node Group
 resource "aws_eks_node_group" "this" {
   cluster_name    = aws_eks_cluster.this.name
@@ -144,7 +182,11 @@ resource "aws_eks_node_group" "this" {
     min_size     = var.node_min_size
   }
 
-  disk_size = 20
+  # ★disk_size는 launch_template과 동시에 쓸 수 없다 → LT의 block_device_mappings로 이동.
+  launch_template {
+    id      = aws_launch_template.mng.id
+    version = aws_launch_template.mng.latest_version
+  }
 
   tags = { Name = "${local.name}-node" }
 }

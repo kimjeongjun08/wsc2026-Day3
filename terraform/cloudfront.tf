@@ -97,6 +97,10 @@ resource "aws_cloudfront_distribution" "this" {
       https_port             = 443
       origin_protocol_policy = "http-only"
       origin_ssl_protocols   = ["TLSv1.2"]
+      # CF↔ALB 커넥션을 60초 웜 유지 → 매 요청 TCP 핸드셰이크 제거(레이턴시 꼬리↓).
+      # read 60초 → 느린 stress 요청이 30초 기본값에서 504 나던 것 방지(5xx→처리). 둘 다 리스크 0.
+      origin_keepalive_timeout = 60
+      origin_read_timeout      = 60
     }
   }
 

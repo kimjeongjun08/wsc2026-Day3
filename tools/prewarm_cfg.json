@@ -1,0 +1,1 @@
+{"pause_cpu": 1730, "kp_node_cap": 6, "kp_node_cap_max": 5, "kp_node_cap_abs": 5, "kp_node_cap_break": 5, "kp_node_cap_normal": 5, "mng_count": 1, "kp_node_stages": [3, 5, 6], "mem_per_node_mi": 3833, "vcpu": 2, "base_min": {"user": 2, "product": 2, "stress": 1}, "base_max": {"user": 20, "product": 20, "stress": 6}, "max_warm": 0}

@@ -4,15 +4,14 @@
 #   1) BlockAttacks(priority 1): 공격 패턴 즉시 차단 → 403 (double URL_DECODE, null byte)
 #   2) BlockHeaderAttacks(priority 2): 헤더 값 공격 → 403
 #   3) BlockUnknownPath(priority 3): 유효 경로 외 → 404
-#   4) AllowValidGET(priority 10): GET 형식 검증 (id/email 값 regex + requestid 숫자)
-#   5) AllowValidPOST(priority 11): POST body 필수필드 + requestid 숫자
+#   4) AllowValidGET(priority 10): GET 형식 검증 (id/email 값 regex)
+#   5) AllowValidPOST(priority 11): POST body 필수필드
 #   6) AllowValidPUT(priority 12): PUT 메소드+경로
 #   7) default BLOCK → 403
 #
 # ★ 정상은 100% 통과 보장:
 #   - id: 영문+숫자+하이픈+언더바+점 (정상 injector 패턴: grade-xxx-pN, seed_xxx 등)
 #   - email: @포함, 영문+숫자+특수일부 (xxx@example.org)
-#   - requestid: 숫자만
 #   - body: 필수 키워드 포함 (username, name, price, length 등)
 #
 # ★ 비정상은 100% 차단:
@@ -22,10 +21,12 @@
 #   - 잘못된 메소드 → default BLOCK → 403
 
 locals {
+  # SPEC:PATHS:BEGIN (apply_spec.py가 spec.py 기준으로 자동 생성 — 직접 수정 말 것)
   waf_get_exact  = ["/v1/user", "/v1/product"]
   waf_post_exact = ["/v1/user", "/v1/product", "/v1/stress"]
   waf_put_exact  = ["/v1/product"]
   waf_prefix     = ["/images/"]
+  # SPEC:PATHS:END
 
   waf_prefix_re = length(local.waf_prefix) > 0 ? format("|^(%s)", join("|", local.waf_prefix)) : ""
   waf_re_known  = format("^(%s)$%s", join("|", distinct(concat(local.waf_get_exact, local.waf_post_exact, local.waf_put_exact))), local.waf_prefix_re)
@@ -35,8 +36,9 @@ locals {
   id_regex = "^[a-zA-Z0-9_.:-]+$"
   # email: 느슨한 이메일 (xxx@xxx.xxx)
   email_regex = "^[a-zA-Z0-9._%+=-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$"
-  # requestid: 숫자만
-  reqid_regex = "^[0-9]+$"
+  # ★requestid 검증 제거: 채점 injector는 requestid를 32-hex로 보내고 product GET엔 아예 없음
+  #   → "숫자만(^[0-9]+$)" 검사가 정상 GET(user+product)을 전량 403 차단하는 FP였음.
+  #   requestid에 든 공격은 Rule1(쿼리 특수문자)·BlockAttacks가 priority 1에서 먼저 잡으므로 보안 영향 0.
 }
 
 # ── 공격 패턴셋 (query/body/uri 공용) ──
@@ -355,8 +357,8 @@ resource "aws_wafv2_web_acl" "cloudfront" {
   }
 
   # ── Rule 10: GET 허용 (값 검증 포함) ──
-  # GET /v1/user: email 형식 + requestid 숫자
-  # GET /v1/product: id 형식 + requestid 숫자
+  # GET /v1/user: email 형식 (requestid 검증 제거 — FP 방지)
+  # GET /v1/product: id 형식 (requestid 검증 제거 — FP 방지)
   # GET /images/*: 경로만
   rule {
     name     = "AllowValidGET"
@@ -409,20 +411,6 @@ resource "aws_wafv2_web_acl" "cloudfront" {
                 }
               }
             }
-            statement {
-              regex_match_statement {
-                regex_string = local.reqid_regex
-                field_to_match {
-                  single_query_argument {
-                    name = "requestid"
-                  }
-                }
-                text_transformation {
-                  priority = 0
-                  type     = "NONE"
-                }
-              }
-            }
           }
         }
         # GET /v1/product — id 형식 + requestid 숫자
@@ -465,20 +453,6 @@ resource "aws_wafv2_web_acl" "cloudfront" {
                 text_transformation {
                   priority = 0
                   type     = "URL_DECODE"
-                }
-              }
-            }
-            statement {
-              regex_match_statement {
-                regex_string = local.reqid_regex
-                field_to_match {
-                  single_query_argument {
-                    name = "requestid"
-                  }
-                }
-                text_transformation {
-                  priority = 0
-                  type     = "NONE"
                 }
               }
             }
@@ -724,8 +698,8 @@ resource "aws_wafv2_web_acl" "cloudfront" {
             search_string         = "PUT"
             positional_constraint = "EXACTLY"
             field_to_match {
-                  method {}
-                }
+              method {}
+            }
             text_transformation {
               priority = 0
               type     = "NONE"
@@ -737,8 +711,8 @@ resource "aws_wafv2_web_acl" "cloudfront" {
             search_string         = "/v1/product"
             positional_constraint = "EXACTLY"
             field_to_match {
-                  uri_path {}
-                }
+              uri_path {}
+            }
             text_transformation {
               priority = 0
               type     = "NONE"

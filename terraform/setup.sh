@@ -84,6 +84,24 @@ done
 # === Install AWS Load Balancer Controller ===
 eksctl utils associate-iam-oidc-provider --cluster $CLUSTER_NAME --region $REGION --approve
 
+# ★멱등성 가드: 이전 클러스터 잔재(같은 이름의 IRSA 역할)로 SA 누락/신뢰정책 stale 방지.
+#   클러스터 재생성 시 역할이 옛 OIDC를 신뢰해 STS 403(AssumeRoleWithWebIdentity)이 남 → SA 보장 +
+#   신뢰정책을 현재 OIDC로 강제. (이게 없으면 재배포 시 Karpenter 컨트롤러가 역할 assume 실패 → rollout 타임아웃.)
+OIDC_PROVIDER="oidc.eks.$REGION.amazonaws.com/id/$(aws eks describe-cluster --name $CLUSTER_NAME --region $REGION --query 'cluster.identity.oidc.issuer' --output text | sed 's|.*/||')"
+ensure_irsa() {  # $1=role-name $2=namespace $3=sa-name
+  kubectl get sa "$3" -n "$2" >/dev/null 2>&1 || kubectl create sa "$3" -n "$2"
+  kubectl annotate sa "$3" -n "$2" eks.amazonaws.com/role-arn="arn:aws:iam::$ACCOUNT_ID:role/$1" --overwrite
+  cat > /tmp/irsa-$3.json <<TRUST
+{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Federated":"arn:aws:iam::$ACCOUNT_ID:oidc-provider/$OIDC_PROVIDER"},"Action":"sts:AssumeRoleWithWebIdentity","Condition":{"StringEquals":{"$OIDC_PROVIDER:sub":"system:serviceaccount:$2:$3","$OIDC_PROVIDER:aud":"sts.amazonaws.com"}}}]}
+TRUST
+  # 역할이 있을 때만 trust 갱신(stale 케이스). 없으면 eksctl가 fresh로 만들 예정이라 skip → NoSuchEntity로 안 죽음.
+  if aws iam get-role --role-name "$1" >/dev/null 2>&1; then
+    aws iam update-assume-role-policy --role-name "$1" --policy-document file:///tmp/irsa-$3.json || true
+  else
+    echo "  (ensure_irsa: 역할 $1 아직 없음 — eksctl가 생성 예정, trust 갱신 skip)"
+  fi
+}
+
 aws iam create-policy \
   --policy-name AWSLoadBalancerControllerIAMPolicy \
   --policy-document file:///home/ec2-user/k8s/iam_policy.json 2>/dev/null || true
@@ -102,6 +120,7 @@ kubectl get sa aws-load-balancer-controller -n kube-system 2>/dev/null || \
 kubectl annotate sa aws-load-balancer-controller -n kube-system \
   eks.amazonaws.com/role-arn=arn:aws:iam::$ACCOUNT_ID:role/AmazonEKSLoadBalancerControllerRole \
   --overwrite
+ensure_irsa AmazonEKSLoadBalancerControllerRole kube-system aws-load-balancer-controller  # ★신뢰정책 현재 OIDC로 강제(고정이름 역할=잔존 위험)
 
 helm repo add eks https://aws.github.io/eks-charts
 helm repo update eks
@@ -146,6 +165,7 @@ eksctl create iamserviceaccount \
   --role-name "KarpenterControllerRole-$CLUSTER_NAME" \
   --attach-policy-arn "arn:aws:iam::$ACCOUNT_ID:policy/KarpenterControllerPolicy-$CLUSTER_NAME" \
   --approve --override-existing-serviceaccounts
+ensure_irsa KarpenterControllerRole-$CLUSTER_NAME kube-system karpenter  # ★SA 보장(eksctl 스킵 대비) + 신뢰정책 현재 OIDC로 강제 → rollout 타임아웃 방지
 
 helm registry logout public.ecr.aws || true
 helm upgrade --install karpenter oci://public.ecr.aws/karpenter/karpenter \
@@ -160,6 +180,22 @@ helm upgrade --install karpenter oci://public.ecr.aws/karpenter/karpenter \
 kubectl rollout status deploy/karpenter -n kube-system --timeout=300s
 echo "=== Karpenter installed ==="
 
+# === VPC CNI Prefix Delegation ===
+#   ★파드 수 상한을 푸는 설정. 이게 없으면 노드당 파드 수가 ENI 개수로 제한된다
+#     (t3.medium 17파드). 앱 request가 70m이면 CPU상 18파드가 들어가는데 ENI에서 먼저
+#     막히고, 시스템 파드(coredns/metrics-server/LBC/karpenter 등 6~8개)를 빼면
+#     앱은 9~11파드에서 멈춘다 → 나머지가 Pending → 카펜터가 노드를 만든다.
+#     즉 CPU는 남는데 노드만 늘어난다(비용 손실 + 부팅 60초 성능 손실).
+#   ★Prefix Delegation을 켜면 ENI 하나가 /28 프리픽스(16 IP)를 받아 상한이 크게 올라간다.
+#     kubelet 쪽 maxPods도 함께 올려야 실제로 쓸 수 있다
+#     (Karpenter 노드는 EC2NodeClass, MNG 노드는 launch template에서 설정).
+#   ★NodePool 적용(=첫 카펜터 노드 생성)과 앱 배포보다 앞에 둔다 — 그 뒤에 뜨는 노드부터
+#     프리픽스를 할당받는다.
+kubectl -n kube-system set env ds/aws-node ENABLE_PREFIX_DELEGATION=true
+kubectl -n kube-system set env ds/aws-node WARM_PREFIX_TARGET=1
+kubectl -n kube-system rollout status ds/aws-node --timeout=180s
+echo "=== VPC CNI Prefix Delegation enabled ==="
+
 kubectl apply -f /home/ec2-user/k8s/karpenter.yaml
 echo "=== Karpenter NodePool applied ==="
 
@@ -167,10 +203,34 @@ echo "=== Karpenter NodePool applied ==="
 kubectl create namespace apdev --dry-run=client -o yaml | kubectl apply -f -
 kubectl apply -f /home/ec2-user/k8s/priorityclass.yaml
 kubectl apply -f /home/ec2-user/k8s/configmap.yaml
+# ★deploy.yaml의 이미지 플레이스홀더(ACCOUNT_ID/REGION/PROJECT)는 terraform이 S3에
+#   업로드할 때 이미 실제 값으로 치환한다(ec2.tf의 aws_s3_object.k8s_deploy).
+#   그래서 여기서 별도 치환을 하지 않는다 — 이중 치환은 매칭 실패만 만든다.
+#   ★로컬 파일을 직접 kubectl apply 하면 플레이스홀더가 그대로 들어가
+#     파드가 InvalidImageName으로 실패한다(실측). 반드시 S3에서 받은 파일을 쓴다.
 kubectl apply -f /home/ec2-user/k8s/deploy.yaml
-kubectl apply -f /home/ec2-user/k8s/service.yaml
+
+# ★LBC webhook 준비 대기 (newtech 미러) — service/tgb가 LBC webhook을 호출. 웹훅 인증서 + IRSA(역할
+#   assume) 전파를 기다려야 STS 403 안 남. rollout + webhook endpoint ready 대기.
+kubectl -n kube-system rollout status deploy/aws-load-balancer-controller --timeout=120s
+for i in $(seq 1 12); do
+  if kubectl get endpoints -n kube-system aws-load-balancer-webhook-service -o jsonpath='{.subsets[*].addresses[*].ip}' 2>/dev/null | grep -q .; then
+    echo "LBC webhook ready"; break
+  fi
+  echo "LBC webhook 대기 중... ($i/12)"; sleep 5
+done
+
+# service.yaml — webhook 인증서/IRSA 전파 지연 대비 retry
+for i in $(seq 1 6); do
+  if kubectl apply -f /home/ec2-user/k8s/service.yaml; then
+    echo "service.yaml applied"; break
+  fi
+  echo "service.yaml apply 재시도 ($i/6) — webhook/IRSA 대기"; sleep 10
+done
+
 kubectl apply -f /home/ec2-user/k8s/hpa.yaml
 kubectl apply -f /home/ec2-user/k8s/pdb.yaml
+# overprovisioning(pause)은 prewarm.py가 실행 시 자기완결형으로 직접 apply → 여기서 파일 apply 안 함(파일 없음).
 
 # Wait for deployments to be ready
 kubectl rollout status deploy/user -n apdev --timeout=180s
@@ -178,7 +238,14 @@ kubectl rollout status deploy/product -n apdev --timeout=180s
 kubectl rollout status deploy/stress -n apdev --timeout=180s
 
 # Apply TargetGroupBindings (LBC registers pod IPs to ALB TGs)
-kubectl apply -f /home/ec2-user/k8s/tgb.yaml
+# ★webhook(mtargetgroupbinding)이 IRSA로 DescribeTargetGroups 호출 → 신뢰정책 전파 지연 시 STS 403.
+#   retry로 흡수(최대 120s). 실제로 403 났던 지점이라 방어 강화.
+for i in $(seq 1 12); do
+  if kubectl apply -f /home/ec2-user/k8s/tgb.yaml; then
+    echo "tgb.yaml applied"; break
+  fi
+  echo "tgb.yaml apply 재시도 ($i/12) — LBC IRSA(신뢰정책) 전파 대기"; sleep 10
+done
 echo "=== TGB applied - pods registered to ALB ==="
 
 echo "=== SETUP COMPLETE ==="

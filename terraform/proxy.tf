@@ -69,9 +69,9 @@ resource "aws_db_proxy" "this" {
   require_tls            = false
 
   auth {
-    auth_scheme = "SECRETS"
-    iam_auth    = "DISABLED"
-    secret_arn  = aws_secretsmanager_secret.db.arn
+    auth_scheme               = "SECRETS"
+    iam_auth                  = "DISABLED"
+    secret_arn                = aws_secretsmanager_secret.db.arn
     client_password_auth_type = "MYSQL_NATIVE_PASSWORD"
   }
 
@@ -83,8 +83,8 @@ resource "aws_db_proxy_default_target_group" "this" {
 
   connection_pool_config {
     max_connections_percent      = 90
-    max_idle_connections_percent = 30
-    connection_borrow_timeout    = 120
+    max_idle_connections_percent = 50
+    connection_borrow_timeout    = 15
   }
 }
 

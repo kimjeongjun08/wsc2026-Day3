@@ -1,3 +1,18 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# Karpenter NodePool — 단일 풀 구조
+#
+# 설계 원칙:
+#   ★단일 풀: Pending 파드 → 즉시 노드 생성 (풀 판단 지연 없음)
+#   ★격리는 deploy.yaml의 podAntiAffinity가 담당:
+#     - stress는 user/product와 같은 노드 금지 (required)
+#     - 결과: stress 파드가 뜨면 자동으로 전용 노드를 받는다
+#   ★비용 보호:
+#     - consolidateAfter 45s: 빈 노드를 적당히 빨리 회수하되, 부하 변동에 왔다갔다 방지
+#     - budgets nodes: 1: 한 번에 1대씩 회수 → 동시 축소 방지
+#     - 캡 12CPU(6대): 안전망
+#   ★Prefix Delegation + maxPods 110: ENI 17파드 병목 해제
+# ═══════════════════════════════════════════════════════════════════════════════
+
 apiVersion: karpenter.sh/v1
 kind: NodePool
 metadata:
@@ -23,17 +38,18 @@ spec:
           operator: In
           values: ["${node_instance_type}"]
       expireAfter: 720h
-  # 하드캡: 카펜터 노드 5대분 (t3.medium 2vCPU × 5) — 총 노드 = MNG 2 + 5 = 7
+  # ★캡 12CPU(6대): 안전망. 실제 노드 수는 HPA가 결정 (보통 2~3대).
   limits:
-    cpu: "10"
-    memory: 20Gi
+    cpu: "12"
+    memory: 24Gi
   disruption:
     consolidationPolicy: WhenEmptyOrUnderutilized
-    consolidateAfter: 20s
+    # ★45s: 30s는 부하 변동에 노드가 왔다갔다(실측: Pending 반복), 2m은 비용 낭비.
+    #   45s면 "진짜로 빈 노드"만 회수하고, 부하가 다시 올 수 있는 과도기는 버텨준다.
+    consolidateAfter: 45s
     budgets:
-      - nodes: "100%"
-# stress 격리는 별도 노드풀(taint) 대신 deploy.yaml의 pod anti-affinity로 처리 →
-#   stress가 user/product와 같은 노드에 못 앉아 노드를 독차지(2코어 확보). 단일 풀로 baseline 2대 유지.
+      # ★1대씩 회수: 동시 축소 방지. 순차적으로 안정적 축소.
+      - nodes: "1"
 ---
 apiVersion: karpenter.k8s.aws/v1
 kind: EC2NodeClass
@@ -58,3 +74,5 @@ spec:
   metadataOptions:
     httpPutResponseHopLimit: 2
     httpTokens: required
+  kubelet:
+    maxPods: 110

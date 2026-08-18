@@ -30,11 +30,11 @@ resource "aws_lb" "this" {
 }
 
 resource "aws_lb_target_group" "user" {
-  name        = "${local.name}-user"
-  port        = 8080
-  protocol    = "HTTP"
-  vpc_id      = aws_vpc.this.id
-  target_type = "ip"
+  name                 = "${local.name}-user"
+  port                 = 8080
+  protocol             = "HTTP"
+  vpc_id               = aws_vpc.this.id
+  target_type          = "ip"
   deregistration_delay = 30
   # 처리 중 요청이 적은 타겟으로 라우팅 — 느린 요청에 물린 파드 회피
   load_balancing_algorithm_type = "least_outstanding_requests"
@@ -44,7 +44,7 @@ resource "aws_lb_target_group" "user" {
     port                = "8080"
     healthy_threshold   = 2
     unhealthy_threshold = 2
-    interval            = 10
+    interval            = 5
     timeout             = 3
   }
 
@@ -52,12 +52,12 @@ resource "aws_lb_target_group" "user" {
 }
 
 resource "aws_lb_target_group" "product" {
-  name        = "${local.name}-product"
-  port        = 8080
-  protocol    = "HTTP"
-  vpc_id      = aws_vpc.this.id
-  target_type = "ip"
-  deregistration_delay = 30
+  name                          = "${local.name}-product"
+  port                          = 8080
+  protocol                      = "HTTP"
+  vpc_id                        = aws_vpc.this.id
+  target_type                   = "ip"
+  deregistration_delay          = 30
   load_balancing_algorithm_type = "least_outstanding_requests"
 
   health_check {
@@ -65,7 +65,7 @@ resource "aws_lb_target_group" "product" {
     port                = "8080"
     healthy_threshold   = 2
     unhealthy_threshold = 2
-    interval            = 10
+    interval            = 5
     timeout             = 3
   }
 
@@ -73,11 +73,11 @@ resource "aws_lb_target_group" "product" {
 }
 
 resource "aws_lb_target_group" "stress" {
-  name        = "${local.name}-stress"
-  port        = 8080
-  protocol    = "HTTP"
-  vpc_id      = aws_vpc.this.id
-  target_type = "ip"
+  name                 = "${local.name}-stress"
+  port                 = 8080
+  protocol             = "HTTP"
+  vpc_id               = aws_vpc.this.id
+  target_type          = "ip"
   deregistration_delay = 30
   # 핵심: length 큰 요청(수 초~수십 초)에 물린 파드로 새 요청이 가지 않게
   # → 가벼운 요청(SLO 통과 가능 클래스)이 무거운 요청 뒤에 줄 서는 것 방지
@@ -88,8 +88,8 @@ resource "aws_lb_target_group" "stress" {
     port                = "8080"
     healthy_threshold   = 2
     unhealthy_threshold = 3
-    interval            = 10
-    timeout             = 5
+    interval            = 5
+    timeout             = 4
   }
 
   tags = { Name = "${local.name}-stress" }

@@ -1,0 +1,321 @@
+# spec.py 기준 생성 — waf.tf AllowValidGET/POST/PUT의 해당 or_statement/statement 본문과 비교/반영용.
+# (terraform fmt로 들여쓰기 정리됨. 자동 반영 아님 — 검토 후 붙여넣기.)
+
+## AllowValidGET or_statement 내부:
+statement {
+and_statement {
+statement {
+byte_match_statement {
+search_string         = "GET"
+positional_constraint = "EXACTLY"
+field_to_match {
+method {}
+}
+text_transformation {
+priority = 0
+type     = "NONE"
+}
+}
+}
+statement {
+byte_match_statement {
+search_string         = "/v1/user"
+positional_constraint = "EXACTLY"
+field_to_match {
+uri_path {}
+}
+text_transformation {
+priority = 0
+type     = "NONE"
+}
+}
+}
+statement {
+regex_match_statement {
+regex_string = local.email_regex
+field_to_match {
+single_query_argument {
+name = "email"
+}
+}
+text_transformation {
+priority = 0
+type     = "URL_DECODE"
+}
+}
+}
+}
+}
+statement {
+and_statement {
+statement {
+byte_match_statement {
+search_string         = "GET"
+positional_constraint = "EXACTLY"
+field_to_match {
+method {}
+}
+text_transformation {
+priority = 0
+type     = "NONE"
+}
+}
+}
+statement {
+byte_match_statement {
+search_string         = "/v1/product"
+positional_constraint = "EXACTLY"
+field_to_match {
+uri_path {}
+}
+text_transformation {
+priority = 0
+type     = "NONE"
+}
+}
+}
+statement {
+regex_match_statement {
+regex_string = local.id_regex
+field_to_match {
+single_query_argument {
+name = "id"
+}
+}
+text_transformation {
+priority = 0
+type     = "URL_DECODE"
+}
+}
+}
+}
+}
+statement {
+and_statement {
+statement {
+byte_match_statement {
+search_string         = "GET"
+positional_constraint = "EXACTLY"
+field_to_match {
+method {}
+}
+text_transformation {
+priority = 0
+type     = "NONE"
+}
+}
+}
+statement {
+byte_match_statement {
+search_string         = "/images/"
+positional_constraint = "STARTS_WITH"
+field_to_match {
+uri_path {}
+}
+text_transformation {
+priority = 0
+type     = "NONE"
+}
+}
+}
+}
+}
+
+## AllowValidPOST or_statement 내부:
+statement {
+and_statement {
+statement {
+byte_match_statement {
+search_string         = "POST"
+positional_constraint = "EXACTLY"
+field_to_match {
+method {}
+}
+text_transformation {
+priority = 0
+type     = "NONE"
+}
+}
+}
+statement {
+byte_match_statement {
+search_string         = "/v1/user"
+positional_constraint = "EXACTLY"
+field_to_match {
+uri_path {}
+}
+text_transformation {
+priority = 0
+type     = "NONE"
+}
+}
+}
+statement {
+byte_match_statement {
+search_string         = "username"
+positional_constraint = "CONTAINS"
+field_to_match {
+body {
+oversize_handling = "CONTINUE"
+}
+}
+text_transformation {
+priority = 0
+type     = "NONE"
+}
+}
+}
+statement {
+byte_match_statement {
+search_string         = "@"
+positional_constraint = "CONTAINS"
+field_to_match {
+body {
+oversize_handling = "CONTINUE"
+}
+}
+text_transformation {
+priority = 0
+type     = "NONE"
+}
+}
+}
+}
+}
+statement {
+and_statement {
+statement {
+byte_match_statement {
+search_string         = "POST"
+positional_constraint = "EXACTLY"
+field_to_match {
+method {}
+}
+text_transformation {
+priority = 0
+type     = "NONE"
+}
+}
+}
+statement {
+byte_match_statement {
+search_string         = "/v1/product"
+positional_constraint = "EXACTLY"
+field_to_match {
+uri_path {}
+}
+text_transformation {
+priority = 0
+type     = "NONE"
+}
+}
+}
+statement {
+byte_match_statement {
+search_string         = "name"
+positional_constraint = "CONTAINS"
+field_to_match {
+body {
+oversize_handling = "CONTINUE"
+}
+}
+text_transformation {
+priority = 0
+type     = "NONE"
+}
+}
+}
+statement {
+byte_match_statement {
+search_string         = "price"
+positional_constraint = "CONTAINS"
+field_to_match {
+body {
+oversize_handling = "CONTINUE"
+}
+}
+text_transformation {
+priority = 0
+type     = "NONE"
+}
+}
+}
+}
+}
+statement {
+and_statement {
+statement {
+byte_match_statement {
+search_string         = "POST"
+positional_constraint = "EXACTLY"
+field_to_match {
+method {}
+}
+text_transformation {
+priority = 0
+type     = "NONE"
+}
+}
+}
+statement {
+byte_match_statement {
+search_string         = "/v1/stress"
+positional_constraint = "EXACTLY"
+field_to_match {
+uri_path {}
+}
+text_transformation {
+priority = 0
+type     = "NONE"
+}
+}
+}
+statement {
+byte_match_statement {
+search_string         = "length"
+positional_constraint = "CONTAINS"
+field_to_match {
+body {
+oversize_handling = "CONTINUE"
+}
+}
+text_transformation {
+priority = 0
+type     = "NONE"
+}
+}
+}
+}
+}
+
+## AllowValidPUT statement 내부:
+statement {
+and_statement {
+statement {
+byte_match_statement {
+search_string         = "PUT"
+positional_constraint = "EXACTLY"
+field_to_match {
+method {}
+}
+text_transformation {
+priority = 0
+type     = "NONE"
+}
+}
+}
+statement {
+byte_match_statement {
+search_string         = "/v1/product"
+positional_constraint = "EXACTLY"
+field_to_match {
+uri_path {}
+}
+text_transformation {
+priority = 0
+type     = "NONE"
+}
+}
+}
+}
+}

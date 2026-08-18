@@ -8,29 +8,38 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: user
-  minReplicas: 1
-  maxReplicas: 4
+  minReplicas: 2
+  maxReplicas: 20
   behavior:
     scaleUp:
       stabilizationWindowSeconds: 0
       policies:
         - type: Pods
-          value: 4
-          periodSeconds: 10
+          value: 6
+          periodSeconds: 15
+        - type: Percent
+          value: 100
+          periodSeconds: 15
       selectPolicy: Max
     scaleDown:
-      stabilizationWindowSeconds: 120
+      stabilizationWindowSeconds: 60
       policies:
-        - type: Pods
-          value: 1
-          periodSeconds: 60
+        - type: Percent
+          value: 30
+          periodSeconds: 30
+      selectPolicy: Max
   metrics:
     - type: Resource
       resource:
         name: cpu
         target:
           type: Utilization
-          averageUtilization: 50
+          # ★request 70m × 33% = 트리거 23m.
+          #   HPA의 실제 기준은 'request × target' 절대값이다. io 요청 하나가 ~19m·s이므로
+          #   23m은 '동시 요청 1.2개' 지점 = 큐가 생기기 시작하는 곳에서 증설한다.
+          #   ★util 78%(트리거 55m)는 동시 2.9개까지 기다리는 값이라 큐가 이미 쌓인 뒤에
+          #     반응한다 → 스파이크에서 p95가 SLO를 넘는다.
+          averageUtilization: 33
 ---
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
@@ -42,29 +51,37 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: product
-  minReplicas: 1
-  maxReplicas: 4
+  minReplicas: 2
+  maxReplicas: 20
   behavior:
     scaleUp:
       stabilizationWindowSeconds: 0
       policies:
         - type: Pods
-          value: 4
-          periodSeconds: 10
+          value: 6
+          periodSeconds: 15
+        - type: Percent
+          value: 100
+          periodSeconds: 15
       selectPolicy: Max
     scaleDown:
-      stabilizationWindowSeconds: 120
+      stabilizationWindowSeconds: 60
       policies:
-        - type: Pods
-          value: 1
-          periodSeconds: 60
+        - type: Percent
+          value: 30
+          periodSeconds: 30
+      selectPolicy: Max
   metrics:
     - type: Resource
       resource:
         name: cpu
         target:
           type: Utilization
-          averageUtilization: 50
+          # ★request 70m × 29% = 트리거 20m.
+          #   product는 CloudFront 캐시가 요청을 흡수해 파드 CPU가 거의 안 오른다.
+          #   그래서 트리거를 metrics-server 해상도 근처(20m)에 두어, CPU가 조금이라도
+          #   올라가면(= 캐시 미스가 실제로 파드에 도달하면) 증설되게 한다.
+          averageUtilization: 29
 ---
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
@@ -76,26 +93,35 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: stress
-  minReplicas: 2
-  maxReplicas: 5
+  # stress는 anti-affinity로 파드당 노드1 → min=2면 전용노드 2대=baseline 3(ratio↑). baseline 2 정책상 min=1.
+  #   부하 시 HPA가 max까지 확장(각자 새 노드). turn.py가 실측으로 재확정.
+  minReplicas: 1
+  maxReplicas: 6
   behavior:
     scaleUp:
       stabilizationWindowSeconds: 0
       policies:
         - type: Pods
-          value: 5
-          periodSeconds: 10
+          value: 1
+          periodSeconds: 15
       selectPolicy: Max
     scaleDown:
-      stabilizationWindowSeconds: 120
+      stabilizationWindowSeconds: 60
       policies:
-        - type: Pods
-          value: 1
-          periodSeconds: 60
+        - type: Percent
+          value: 30          # 보수적 (요요 방지)
+          periodSeconds: 30
+      selectPolicy: Max
   metrics:
     - type: Resource
       resource:
         name: cpu
         target:
           type: Utilization
-          averageUtilization: 40
+          # ★request 600m × 55% = 트리거 330m.
+          #   stress 요청 하나가 ~628m·s를 쓰므로 330m은 '동시 요청 0.53개' 지점이다.
+          #   즉 파드가 절반 시간만 바빠도 증설한다 — 요청 하나가 코어를 다 쓰는 앱이라
+          #   '동시 1개'가 되면 이미 두 번째가 대기하므로 그 전에 늘려야 한다.
+          #   ★파드당 1노드(limit 2 = 코어 전부)이므로 증설이 곧 노드 추가다.
+          #     그래서 늦게 반응하면 노드 부팅 60초 동안 큐가 쌓여 성능이 무너진다.
+          averageUtilization: 55

@@ -1,3 +1,18 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# Karpenter NodePool — 단일 풀 구조
+#
+# 설계 원칙:
+#   ★단일 풀: Pending 파드 → 즉시 노드 생성 (풀 판단 지연 없음)
+#   ★격리는 deploy.yaml의 podAntiAffinity가 담당:
+#     - stress는 user/product와 같은 노드 금지 (required)
+#     - 결과: stress 파드가 뜨면 자동으로 전용 노드를 받는다
+#   ★비용 보호:
+#     - consolidateAfter 45s: 빈 노드를 적당히 빨리 회수하되, 부하 변동에 왔다갔다 방지
+#     - budgets nodes: 1: 한 번에 1대씩 회수 → 동시 축소 방지
+#     - 캡 12CPU(6대): 안전망
+#   ★Prefix Delegation + maxPods 110: ENI 17파드 병목 해제
+# ═══════════════════════════════════════════════════════════════════════════════
+
 apiVersion: karpenter.sh/v1
 kind: NodePool
 metadata:
@@ -16,22 +31,25 @@ spec:
         - key: kubernetes.io/arch
           operator: In
           values: ["amd64"]
-        # 버스트 노드는 spot 우선(비용 ~70%↓, 성능 동일) + on-demand 폴백(spot 없을 때).
-        #   baseline은 MNG 2대(on-demand 고정)라 안정 유지 → spot 중단돼도 서비스 지속.
-        #   spot 리스크(중단) 싫으면 values를 ["on-demand"]로 되돌리면 됨.
         - key: karpenter.sh/capacity-type
           operator: In
-          values: ["spot", "on-demand"]
+          values: ["on-demand"]
         - key: node.kubernetes.io/instance-type
           operator: In
           values: ["${node_instance_type}"]
       expireAfter: 720h
+  # ★캡 12CPU(6대): 안전망. 실제 노드 수는 HPA가 결정 (보통 2~3대).
   limits:
-    cpu: "6"
-    memory: 12Gi
+    cpu: "12"
+    memory: 24Gi
   disruption:
     consolidationPolicy: WhenEmptyOrUnderutilized
-    consolidateAfter: 60s
+    # ★45s: 30s는 부하 변동에 노드가 왔다갔다(실측: Pending 반복), 2m은 비용 낭비.
+    #   45s면 "진짜로 빈 노드"만 회수하고, 부하가 다시 올 수 있는 과도기는 버텨준다.
+    consolidateAfter: 45s
+    budgets:
+      # ★1대씩 회수: 동시 축소 방지. 순차적으로 안정적 축소.
+      - nodes: "1"
 ---
 apiVersion: karpenter.k8s.aws/v1
 kind: EC2NodeClass
@@ -53,3 +71,8 @@ spec:
         volumeSize: 20Gi
         volumeType: gp3
         deleteOnTermination: true
+  metadataOptions:
+    httpPutResponseHopLimit: 2
+    httpTokens: required
+  kubelet:
+    maxPods: 110

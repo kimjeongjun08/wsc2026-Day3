@@ -15,7 +15,10 @@ spec:
       stabilizationWindowSeconds: 0
       policies:
         - type: Pods
-          value: 4
+          value: 6
+          periodSeconds: 15
+        - type: Percent
+          value: 100
           periodSeconds: 15
       selectPolicy: Max
     scaleDown:
@@ -31,7 +34,12 @@ spec:
         name: cpu
         target:
           type: Utilization
-          averageUtilization: 78
+          # ★request 70m × 33% = 트리거 23m.
+          #   HPA의 실제 기준은 'request × target' 절대값이다. io 요청 하나가 ~19m·s이므로
+          #   23m은 '동시 요청 1.2개' 지점 = 큐가 생기기 시작하는 곳에서 증설한다.
+          #   ★util 78%(트리거 55m)는 동시 2.9개까지 기다리는 값이라 큐가 이미 쌓인 뒤에
+          #     반응한다 → 스파이크에서 p95가 SLO를 넘는다.
+          averageUtilization: 33
 ---
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
@@ -50,7 +58,10 @@ spec:
       stabilizationWindowSeconds: 0
       policies:
         - type: Pods
-          value: 4
+          value: 6
+          periodSeconds: 15
+        - type: Percent
+          value: 100
           periodSeconds: 15
       selectPolicy: Max
     scaleDown:
@@ -66,7 +77,11 @@ spec:
         name: cpu
         target:
           type: Utilization
-          averageUtilization: 78
+          # ★request 70m × 29% = 트리거 20m.
+          #   product는 CloudFront 캐시가 요청을 흡수해 파드 CPU가 거의 안 오른다.
+          #   그래서 트리거를 metrics-server 해상도 근처(20m)에 두어, CPU가 조금이라도
+          #   올라가면(= 캐시 미스가 실제로 파드에 도달하면) 증설되게 한다.
+          averageUtilization: 29
 ---
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
@@ -87,7 +102,7 @@ spec:
       stabilizationWindowSeconds: 0
       policies:
         - type: Pods
-          value: 2
+          value: 1
           periodSeconds: 15
       selectPolicy: Max
     scaleDown:
@@ -103,5 +118,10 @@ spec:
         name: cpu
         target:
           type: Utilization
-          # util 70%: 노드당 1파드라 부하 늘면 노드 추가로 대응
+          # ★request 600m × 55% = 트리거 330m.
+          #   stress 요청 하나가 ~628m·s를 쓰므로 330m은 '동시 요청 0.53개' 지점이다.
+          #   즉 파드가 절반 시간만 바빠도 증설한다 — 요청 하나가 코어를 다 쓰는 앱이라
+          #   '동시 1개'가 되면 이미 두 번째가 대기하므로 그 전에 늘려야 한다.
+          #   ★파드당 1노드(limit 2 = 코어 전부)이므로 증설이 곧 노드 추가다.
+          #     그래서 늦게 반응하면 노드 부팅 60초 동안 큐가 쌓여 성능이 무너진다.
           averageUtilization: 55

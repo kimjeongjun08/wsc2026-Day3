@@ -78,9 +78,10 @@ CloudFront (WAF + product 캐싱) → ALB → EKS (HPA + Karpenter + scaler) →
 **필수 CLI 4개**
 | 도구 | 용도 | 설치 |
 |---|---|---|
+| **Choco Install** | 패키지 관리 |  Set-ExecutionPolicy Bypass -Scope Process -Force; [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager ::SecurityProtocol -bor 3072; iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1')) |
 | **Terraform** | 인프라 배포 | https://developer.hashicorp.com/terraform/install |
-| **AWS CLI v2** | terraform/kubectl 인증(EKS 토큰), kubeconfig | https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html |
-| **kubectl** | 모든 파이썬 툴이 클러스터 제어 | https://kubernetes.io/docs/tasks/tools/ |
+| **AWS CLI v2** | terraform/kubectl 인증(EKS 토큰), kubeconfig | https://awscli.amazonaws.com/AWSCLIV2.msi |
+| **kubectl** | 모든 파이썬 툴이 클러스터 제어 | choco install kubernetes-cli -y |
 | **Python 3.9+ & pip** | 튜닝/WAF/모니터 툴 | https://www.python.org/downloads/ |
 
 > eksctl·helm은 **bastion EC2가 자동 설치**(Karpenter용)라 내 PC엔 불필요.

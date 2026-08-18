@@ -127,7 +127,10 @@ resource "aws_instance" "bastion" {
   iam_instance_profile        = aws_iam_instance_profile.ec2.name
   associate_public_ip_address = true
 
-  user_data = templatefile("${path.module}/userdata.tpl", {
+  # ★newtech 방식 미러: base64gzip(16KB 한도 대비 압축, cloud-init 자동해제) + CRLF→LF 강제.
+  #   CRLF면 bash `\` 줄연속이 깨져 eksctl 명령 truncate → IAM 역할 미생성 → NoSuchEntity.
+  #   raw user_data는 setup.sh 커지면 16KB 초과로 잘릴 위험 → gzip으로 회피(newtech가 그래서 됨).
+  user_data_base64 = base64gzip(replace(templatefile("${path.module}/userdata.tpl", {
     setup_script = templatefile("${path.module}/setup.sh", {
       region         = var.region
       account_id     = data.aws_caller_identity.current.account_id
@@ -144,7 +147,7 @@ resource "aws_instance" "bastion" {
     })
     artifacts_bucket = aws_s3_bucket.setup.bucket
     region           = var.region
-  })
+  }), "\r", ""))
 
   tags = { Name = "${local.name}-bastion" }
 
