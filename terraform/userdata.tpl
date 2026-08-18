@@ -38,3 +38,11 @@ for APP in user product stress; do
   chmod +x /home/ec2-user/application/$APP/$APP
 done
 chown -R ec2-user:ec2-user /home/ec2-user/application
+
+# ★setup.sh 를 실제로 실행한다. 원본은 파일만 써두고 실행하지 않아 apply 후 아무것도 배포되지 않았다.
+#   · systemd-run 으로 cloud-init 세션에서 분리한다. 백그라운드(&)로 띄우면 cloud-init 이
+#     끝날 때 프로세스 그룹째 정리되어 로그만 남고 중간에 죽는다.
+#   · HOME=/root 를 반드시 준다. 비어 있으면 kubectl 이 /root/.kube/config 를 못 찾아
+#     localhost:8080 으로 붙고, setup.sh 의 "노드 Ready 대기" 루프에서 영원히 멈춘다.
+#   · 진행 로그는 /home/ec2-user/setup.log (setup.sh 가 스스로 리다이렉트한다).
+systemd-run --unit=apdev-setup --setenv=HOME=/root /bin/bash /home/ec2-user/setup.sh

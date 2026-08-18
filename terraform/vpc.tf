@@ -15,7 +15,11 @@ resource "aws_internet_gateway" "this" {
 resource "aws_subnet" "public" {
   count                   = length(var.azs)
   vpc_id                  = aws_vpc.this.id
-  cidr_block              = cidrsubnet(var.vpc_cidr, 8, count.index)
+  # ★/20 (4096개, /28 블록 256개). 8비트로 쪼개면 /24 라 /28 블록이 16개뿐이다.
+  #   prefix delegation 은 "연속된 /28 블록" 을 통째로 잡는다 — 총 여유 IP 가 남아 있어도
+  #   블록이 조각나면 신규 노드가 prefix 를 못 받아 파드가 ContainerCreating 에 갇힌다.
+  #   실측: /24 + maxPods 110 으로 노드 6대까지 가자 user 파드 20개 중 9개가 IP 를 못 받았다.
+  cidr_block              = cidrsubnet(var.vpc_cidr, 4, count.index)
   availability_zone       = var.azs[count.index]
   map_public_ip_on_launch = true
   tags = {

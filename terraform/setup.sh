@@ -193,6 +193,9 @@ echo "=== Karpenter installed ==="
 #     프리픽스를 할당받는다.
 kubectl -n kube-system set env ds/aws-node ENABLE_PREFIX_DELEGATION=true
 kubectl -n kube-system set env ds/aws-node WARM_PREFIX_TARGET=1
+# ★WARM_ENI_TARGET 은 반드시 지운다. WARM_PREFIX_TARGET 과 같이 있으면 prefix 할당이 동작하지 않는다.
+#   실측: 둘 다 있으면 신규 노드 ENI 에 Ipv4Prefixes 가 하나도 안 붙어 파드가 IP 를 못 받는다.
+kubectl -n kube-system set env ds/aws-node WARM_ENI_TARGET-
 kubectl -n kube-system rollout status ds/aws-node --timeout=180s
 echo "=== VPC CNI Prefix Delegation enabled ==="
 
