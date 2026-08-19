@@ -110,7 +110,13 @@ curl -o /dev/null -w '%{http_code}\n' -X POST <주소>/v1/user \
   -d '{"requestid":"r","uuid":"u","username":"probe1","email":"probe1@x.com"}'
 ```
 
-`201` 이면 정상. **`403` 이 나오면 `User-Agent` 헤더를 뺀 것이다** — WAF 가 기본 curl 을 막는다.
+`201` 이면 정상.
+
+**`403` 이 나오면 body 에 필수 필드가 빠진 것이다.** WAF 는 기본 차단 + 허용 규칙 구조라,
+`user` 는 `username`, `product` 는 `name`·`price`, `stress` 는 `length` 가 body 에 있어야 통과한다.
+앱 문제가 아니다.
+
+**`404` 가 나오면 경로가 틀린 것이다** (`BlockUnknownPath` 규칙).
 
 마지막으로 상태 확인:
 
