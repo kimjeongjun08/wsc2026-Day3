@@ -47,6 +47,9 @@ W_STRESS=${W_STRESS:-3}
 
 SLA_USER=200; SLA_PRODUCT=200; SLA_STRESS=1000
 
+# 워커 수. 각 워커는 PACE_MS 간격으로 쏘므로 총 rps ≈ WORKERS / (PACE_MS/1000) = RPS 가 된다.
+WORKERS=${WORKERS:-24}
+
 echo "== 사전 튜닝 — 엔드포인트 $ENDPOINT"
 echo "   후보: $CANDS"
 echo "   부하: 총 ${RPS}rps × ${DUR}초, POST 비율 ${POST_RATIO}%"
@@ -54,9 +57,15 @@ echo "   ※ POST 는 DB 에 행을 만든다. 과제지가 임의 데이터 삽
 echo
 
 # 부하 워커 — 파드 안에서 돈다 (외부에서 쏘면 내 노트북 회선이 병목이 된다)
+# ★워커마다 목표 간격을 준다.
+#   페이싱이 없으면 워커가 "가능한 한 빨리" 쏘므로, 빠른 구성일수록 부하가 커진다.
+#   그러면 "같은 부하에서 어느 구성이 나은가"가 아니라 "구성마다 다른 부하"를 비교하게 된다.
+#   실측: 목표 40rps 인데 2노드에서 70rps, 3노드에서 92rps 가 들어갔다.
+PACE_MS=$(( 1000 * WORKERS / (RPS<1 ? 1 : RPS) ))
 cat > /tmp/pre_worker.sh <<WORKER
 EP=$ENDPOINT
 DUR=$DUR
+PACE_MS=$PACE_MS
 POST_RATIO=$POST_RATIO
 W_USER=$W_USER
 W_PRODUCT=$W_PRODUCT
@@ -103,6 +112,10 @@ while [ "$(date +%s)" -lt "$END" ]; do
         -H 'Content-Type: application/json' -H "User-Agent: $UA" -d "$B" "$EP/v1/$APP")
   fi
   echo "$APP $M $O"
+  # 목표 간격에 못 미치면 남은 만큼 쉰다 (초과했으면 그대로 진행)
+  SPENT=$(echo "$O" | awk '{printf "%d", $2*1000}')
+  REST=$(( PACE_MS - SPENT ))
+  [ "$REST" -gt 0 ] && sleep "$(awk -v m=$REST 'BEGIN{printf "%.3f", m/1000}')"
 done
 WORKER
 B64=$(base64 < /tmp/pre_worker.sh | tr -d '\n')
@@ -119,10 +132,6 @@ for i in \$(seq 1 60); do
 done
 kubectl -n $NS exec loadgen -- sh -c \"echo $B64 | base64 -d > /tmp/w.sh\"" >/dev/null
 }
-
-# 목표 rps 를 워커 수로 낸다. 워커 하나가 초당 몇 개를 내는지는 지연에 달렸으므로,
-# 넉넉히 띄우고 실제 달성 rps 를 결과에 같이 기록한다.
-WORKERS=${WORKERS:-24}
 
 run_load() {   # 결과: 앱별 통과율과 달성 rps
   bx "kubectl -n $NS exec loadgen -- sh -c 'i=0; while [ \$i -lt $WORKERS ]; do WID=\$i sh /tmp/w.sh & i=\$((i+1)); done; wait'" 2>/dev/null

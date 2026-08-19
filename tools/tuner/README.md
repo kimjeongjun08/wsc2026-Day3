@@ -159,6 +159,7 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST <엔드포인트>/v1/user \
 | `./concurrency.sh <앱> [post\|get]` | 수동 | 동시성-지연 곡선 측정 |
 | `python3 solve.py --traffic '<json>'` | 수동 | 최적 구성 계산만 |
 | `./verify.sh <배수> [분]` | 연습용 | 채점 회차 실행 (`.env` 필요) |
+| `./scenario.sh rates '<json>'` | 연습용 | 주입기 트래픽 모양 변경 |
 
 `<배치>` 는 `shared`(stress 동거) 또는 `iso`·`iso2`·`iso3`(stress 전용 노드 1·2·3대).
 
@@ -242,7 +243,7 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST <엔드포인트>/v1/user \
 | `apply.sh` | 구성 고정 (`minDomains` + `limits.cpu` + NodeClaim 회수) |
 | `tune_requests.sh` | stress CPU 지분 조정 |
 | `calibrate.py` | 회차 데이터로 계수 재적합 |
-| `verify.sh` / `scenario.sh` / `matrix.sh` | 연습 환경 검증용 (대회에선 안 씀) |
+| `verify.sh` / `scenario.sh` | 연습 환경 검증용 (대회에선 안 씀) |
 | `profile.sh` / `measure_usable.py` / `cpuwatch.sh` | 진단용 (1시간 경로에서는 제외) |
 | `VALIDATION.md` | 검증 결과 — 믿을 수 있는 범위와 없는 범위 |
 | `BEST.md` | 40.0/40 구성 상세 |
