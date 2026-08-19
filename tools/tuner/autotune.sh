@@ -27,10 +27,17 @@ cd "$(dirname "$0")"; source ./lib.sh
 
 REGION=${AWS_DEFAULT_REGION:-ap-northeast-2}
 ALB_NAME=${ALB_NAME:-apdev-alb}
-INTERVAL=${INTERVAL:-300}
+# ★주기를 둘로 나눈다.
+#   과부하 방어는 빨라야 한다 — SLA 를 넘고 있는데 5분을 기다리면 그 구간을 통째로 잃는다.
+#   반면 구조 변경(minDomains·stress 배치)은 Deployment 롤아웃을 부르므로 드물어야 한다.
+#   파드 교체 때 흘리는 요청은 가용성 12점에 직결된다.
+#   노드 상한(NodePool.limits.cpu)만 바꾸는 건 파드를 안 건드리므로 자주 해도 안전하다.
+INTERVAL=${INTERVAL:-60}          # 감시 주기 (과부하 확인)
+STRUCT_COOLDOWN=${STRUCT_COOLDOWN:-600}   # 구조 변경 최소 간격(초)
 MIN_GAIN=${MIN_GAIN:-1.0}      # 이 점수 이상 좋아질 때만 구성을 바꾼다 (잦은 교체 방지)
 STATE=${STATE:-.autotune-state}
 MAX_NODES=${MAX_NODES:-8}
+CAP_MARGIN=${CAP_MARGIN:-2}       # 하한 위로 몇 대까지 자동 증설을 허용할지
 
 # ── 지금 트래픽을 ALB 에서 읽는다 (앱별 rps) ───────────────────────────────
 read_traffic() {
@@ -67,7 +74,8 @@ read_traffic() {
 recalibrate_curves() {
   local lb lbdim tg name rt traffic nodes mode
   traffic=$(read_traffic) || return 1
-  read -r nodes mode <<<"$(cat "$STATE" 2>/dev/null)"
+  nodes=$(awk '{print $1}' "$STATE" 2>/dev/null)
+  mode=$(awk '{print $2}' "$STATE" 2>/dev/null)
   [ -z "${nodes:-}" ] && return 0
   lb=$(aws elbv2 describe-load-balancers --region "$REGION" --names "$ALB_NAME" \
        --query 'LoadBalancers[0].LoadBalancerArn' --output text 2>/dev/null)
@@ -133,7 +141,7 @@ score_of() { sed -n 's/^최적:.*예상 \([0-9.]*\)\/40.*/\1/p' <<<"$1"; }
 # SLA 를 넘고 있으면 계산을 기다리지 않고 노드를 늘린다.
 overload_nodes() {   # SLA 초과 중이면 늘려야 할 노드 수를 출력, 아니면 빈 값
     local lb lbdim tg name rt cur worst=0
-    read -r cur _ <<<"$(cat "$STATE" 2>/dev/null)"
+    cur=$(awk '{print $1}' "$STATE" 2>/dev/null)
     [ -z "${cur:-}" ] && return 0
     lb=$(aws elbv2 describe-load-balancers --region "$REGION" --names "$ALB_NAME" \
          --query 'LoadBalancers[0].LoadBalancerArn' --output text 2>/dev/null)
@@ -174,9 +182,9 @@ once() {
   if [ -n "${urgent:-}" ] && [ "$urgent" -le "$MAX_NODES" ]; then
     echo "   과부하 감지 → 노드 $urgent 대로 즉시 증설"
     if [ "$apply" = "yes" ]; then
-      read -r _ m <<<"$(cat "$STATE" 2>/dev/null)"
-      ./apply.sh "$urgent" "${m:-shared}" | tail -2
-      echo "$urgent ${m:-shared}" > "$STATE"
+      m=$(awk '{print $2}' "$STATE" 2>/dev/null)
+      ./apply.sh "$urgent" "${m:-shared}" "$((urgent+CAP_MARGIN))" | tail -2
+      echo "$urgent ${m:-shared} $((urgent+CAP_MARGIN))" > "$STATE"
     fi
     return 0
   fi
@@ -192,14 +200,25 @@ once() {
     echo "   현재 구성과 동일 ($nodes/$mode) — 유지"
     return 0
   fi
+  # 구조 변경은 롤아웃을 부른다. 최근에 바꿨으면 참는다.
+  if [ -f "$STATE" ]; then
+    local age=$(( $(date +%s) - $(stat -f %m "$STATE" 2>/dev/null || stat -c %Y "$STATE") ))
+    if [ "$age" -lt "$STRUCT_COOLDOWN" ]; then
+      echo "   구조 변경 대기 (${age}초 전에 바꿨다, 최소 ${STRUCT_COOLDOWN}초)"
+      return 0
+    fi
+  fi
   if [ "$apply" != "yes" ]; then
     echo "   추천: $nodes 노드 / $mode (예상 $score) — show 모드라 적용 안 함"
     return 0
   fi
   echo "   구성 변경: ${cur:-미설정} → $nodes/$mode (예상 $score)"
-  # 트래픽을 실제로 측정한 뒤이므로 상한을 하한까지 좁힌다 (비용 확정).
-  ./apply.sh "$nodes" "$mode" "$nodes" | tail -3
-  echo "$nodes $mode" > "$STATE"
+  # ★상한은 하한까지 좁히지 않는다.
+  #   트래픽은 오르내린다(베이스라인 2rps ↔ 스파이크 22rps, 11배). 상한을 좁히면
+  #   다음 스파이크에 Karpenter 가 못 늘린다. 비용은 구간 '평균'이라, 낮을 때 적게 쓰고
+  #   높을 때 늘리는 쪽이 항상 이긴다 (계속 4대 평균 4.0 vs 오르내리며 평균 3.3).
+  ./apply.sh "$nodes" "$mode" "$((nodes+CAP_MARGIN))" | tail -3
+  echo "$nodes $mode $((nodes+CAP_MARGIN))" > "$STATE"
 }
 
 # ── 안정화 확인 ───────────────────────────────────────────────────────────
@@ -224,12 +243,15 @@ print(' '.join(bad))")
   n=$(kubectl -n "$NS" get pods --field-selector=status.phase=Pending --no-headers 2>/dev/null | wc -l | tr -d ' ')
   if [ "${n:-0}" != 0 ]; then echo "   [X] Pending 파드 ${n}개"; fail=1; else echo "   [O] Pending 파드 없음"; fi
 
-  # 3) 노드 수가 목표와 같은가 (Karpenter 가 아직 만들거나 지우는 중이면 불안정)
+  # 3) 노드 수가 하한 이상이고 상한 이하인가
+  #    ★상한이 열려 있으면 노드 수는 하한~상한 사이에서 정상적으로 오르내린다.
+  #      "목표와 정확히 일치"를 요구하면 트래픽 중에는 항상 실패한다.
   want=$(awk '{print $1}' "$STATE" 2>/dev/null)
+  cap=$(awk '{print ($3==""?$1:$3)}' "$STATE" 2>/dev/null)
   n=$(kubectl get nodes --no-headers 2>/dev/null | grep -c " Ready")
-  if [ -n "$want" ] && [ "${n:-0}" != "$want" ]; then
-    echo "   [X] 노드 ${n}대 (목표 ${want}대) — 수렴 중"; fail=1
-  else echo "   [O] 노드 ${n}대 (목표 ${want:-?}대)"; fi
+  if [ -n "$want" ] && { [ "${n:-0}" -lt "$want" ] || [ "${n:-0}" -gt "${cap:-$want}" ]; }; then
+    echo "   [X] 노드 ${n}대 (하한 ${want} / 상한 ${cap:-$want}) — 수렴 중"; fail=1
+  else echo "   [O] 노드 ${n}대 (하한 ${want:-?} / 상한 ${cap:-?})"; fi
 
   # 4) NotReady 노드가 없는가
   n=$(kubectl get nodes --no-headers 2>/dev/null | grep -c "NotReady")
@@ -286,7 +308,7 @@ prepare() {
   echo "== 콜드 스타트 구성 적용 (하한 ${COLD_NODES:-2} / 상한 ${COLD_CAP:-6})"
   ./apply.sh "${COLD_NODES:-2}" "${COLD_MODE:-shared}" "${COLD_CAP:-6}" | tail -3
   ./tune_requests.sh "${COLD_STRESS_REQ:-100m}" | tail -1
-  echo "${COLD_NODES:-2} ${COLD_MODE:-shared}" > "$STATE"
+  echo "${COLD_NODES:-2} ${COLD_MODE:-shared} ${COLD_CAP:-6}" > "$STATE"
 
   # 트래픽이 들어오는 순간에 이미 안정 상태여야 한다. 될 때까지 확인한다.
   echo
@@ -309,7 +331,10 @@ case "${1:-run}" in
       once yes
       # 구성을 바꿨으면 안정화될 때까지 지켜본 뒤 다음 주기로 간다.
       # 트래픽 중 파드/노드가 흔들리면 가용성(12점)이 깎이므로 조급하게 또 바꾸지 않는다.
-      ready >/dev/null 2>&1 || { echo "   구성 변경 후 안정화 대기"; sleep 60; }
+      if ! ready >/dev/null 2>&1; then
+        echo "   아직 불안정하다 — 60초 더 지켜본다 (자세히: ./autotune.sh ready)"
+        sleep 60
+      fi
       sleep "$INTERVAL"
     done ;;
   *) echo "사용: autotune.sh prepare|run|once|show" >&2; exit 1 ;;

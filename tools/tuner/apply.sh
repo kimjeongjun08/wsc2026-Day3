@@ -38,6 +38,10 @@ if [ "$MODE" = "shared" ]; then
   KARP=$((T-1)); STRESS_LIMIT=0    # MNG 1대 제외한 나머지가 Karpenter 몫
 else
   ISO=${MODE#iso}; ISO=${ISO:-1}
+  # 배치 이름이 iso/iso2/... 가 아니면 여기서 멈춘다.
+  # 예전에 STATE 파싱이 깨져 MODE 에 "shared 6" 이 들어왔고,
+  # 산술식에서 "shared: unbound variable" 로 죽어 과부하 증설이 실패했다.
+  case "$ISO" in (*[!0-9]*|"") echo "배치 값이 잘못됐다: '$MODE' (shared|iso|iso2|iso3)" >&2; exit 1 ;; esac
   DOMAINS=$((T-ISO))               # stress 노드는 taint → 도메인에서 제외됨
   KARP=$((T-1-ISO)); STRESS_LIMIT=$((ISO*VCPU))
 fi
@@ -46,8 +50,19 @@ LIMIT=$(( (KARP + (CAP-T)) * VCPU ))
 echo "== 하한 $T 대 / 상한 $CAP 대 / stress=$MODE (전용 ${ISO}대)"
 echo "   도메인 $DOMAINS, Karpenter 공유 상한 ${LIMIT}vCPU, stress 상한 ${STRESS_LIMIT}vCPU"
 
+# ★트래픽 중에는 Deployment 를 건드리지 않는다.
+#   Deployment 패치는 롤링 재시작을 일으킨다. maxUnavailable:0 이라 용량이 줄지는 않지만,
+#   파드 교체 때 ALB 등록/해제가 오가면서 흘리는 요청이 생기고 그건 가용성 12점에 직결된다.
+#   그래서 '값이 실제로 달라질 때만' 패치한다.
+#   노드 상한(NodePool.limits.cpu)은 파드를 건드리지 않으므로 언제든 바꿔도 안전하다.
+CUR_MD=$(bx "kubectl -n $NS get deploy user -o jsonpath='{.spec.template.spec.topologySpreadConstraints[0].minDomains}'" 2>/dev/null | tr -d ' \n')
+CUR_SEL=$(bx "kubectl -n $NS get deploy stress -o jsonpath='{.spec.template.spec.nodeSelector.role}'" 2>/dev/null | tr -d ' \n')
+WANT_SEL=""; [ "$ISO" != 0 ] && WANT_SEL=stress
+
 # stress 배치 모드 전환
-if [ "$ISO" = "0" ]; then
+if [ "$CUR_SEL" = "$WANT_SEL" ] && [ "$ISO" -le 1 ]; then
+  echo "-- stress 배치 변경 없음 — 롤아웃 생략"
+elif [ "$ISO" = "0" ]; then
   bx "kubectl -n $NS patch deploy stress --type=json -p='[
         {\"op\":\"remove\",\"path\":\"/spec/template/spec/nodeSelector\"},
         {\"op\":\"remove\",\"path\":\"/spec/template/spec/tolerations\"}]' >/dev/null 2>&1 || true"
@@ -74,6 +89,9 @@ bx "kubectl patch nodepool apdev-pool --type=merge -p '{\"spec\":{\"limits\":{\"
 kubectl patch nodepool apdev-stress-pool --type=merge -p '{\"spec\":{\"limits\":{\"cpu\":\"$STRESS_LIMIT\"}}}' >/dev/null
 echo '   apdev-pool='\$(kubectl get nodepool apdev-pool -o jsonpath='{.spec.limits.cpu}')' stress-pool='\$(kubectl get nodepool apdev-stress-pool -o jsonpath='{.spec.limits.cpu}')"
 
+if [ "$CUR_MD" = "$DOMAINS" ]; then
+  echo "-- minDomains 변경 없음($DOMAINS) — 롤아웃 생략"
+else
 bx "for d in user product; do
   kubectl -n $NS patch deploy \$d --type=json \
     -p='[{\"op\":\"replace\",\"path\":\"/spec/template/spec/topologySpreadConstraints/0/minDomains\",\"value\":$DOMAINS}]' >/dev/null \
@@ -81,8 +99,9 @@ bx "for d in user product; do
        -p='[{\"op\":\"add\",\"path\":\"/spec/template/spec/topologySpreadConstraints/0/minDomains\",\"value\":$DOMAINS}]' >/dev/null
 done
 kubectl -n $NS rollout status deploy/user --timeout=300s | tail -1
-kubectl -n $NS rollout status deploy/product --timeout=300s | tail -1
-kubectl -n $NS rollout status deploy/stress --timeout=300s | tail -1"
+kubectl -n $NS rollout status deploy/product --timeout=300s | tail -1"
+fi
+bx "kubectl -n $NS rollout status deploy/stress --timeout=300s | tail -1"
 
 # 축소는 Karpenter 의 자발적 통합에 맡기지 않는다.
 #   limits.cpu 를 낮춰도 '이미 떠 있는' 노드는 안 지운다. 게다가 user/product 의
