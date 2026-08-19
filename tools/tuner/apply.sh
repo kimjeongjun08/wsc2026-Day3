@@ -18,8 +18,15 @@
 #   Karpenter 가 노드를 계속 붙인다 (실측: x1.0 에서 9대 → 비용 0/12).
 set -uo pipefail
 cd "$(dirname "$0")"; source ./lib.sh
-T=${1:?사용법: apply.sh <총노드수> [iso|shared]}
+T=${1:?사용법: apply.sh <총노드수> [iso|shared] [상한노드수]}
 MODE=${2:-iso}
+# ★상한을 하한과 분리한다.
+#   트래픽 규모를 모르는 상태(대회 시작 시점)에서 상한까지 묶으면, 스파이크가 와도
+#   Karpenter 가 노드를 못 만든다. 실측: 그 조건에서 stress 가 26% 로 무너져 22.5점.
+#   하한(minDomains)은 "항상 이만큼은 유지", 상한(limits.cpu)은 "여기까지는 허용"이다.
+#   트래픽을 재고 나면 상한을 하한까지 좁혀 비용을 확정한다.
+CAP=${3:-$T}
+[ "$CAP" -lt "$T" ] && CAP=$T
 VCPU=${VCPU:-2}
 
 # MODE: shared | iso | iso2 | iso3 ...  (iso 뒤 숫자 = stress 전용 노드 수)
@@ -35,8 +42,9 @@ else
   KARP=$((T-1-ISO)); STRESS_LIMIT=$((ISO*VCPU))
 fi
 [ "$DOMAINS" -lt 1 ] && { echo "공유 노드가 0 이하다 — 총노드수를 늘려라" >&2; exit 1; }
-LIMIT=$((KARP*VCPU))
-echo "== 총 $T 대 / stress=$MODE (전용 ${ISO}대)  (도메인 $DOMAINS, Karpenter 공유 상한 ${LIMIT}vCPU, stress 상한 ${STRESS_LIMIT}vCPU)"
+LIMIT=$(( (KARP + (CAP-T)) * VCPU ))
+echo "== 하한 $T 대 / 상한 $CAP 대 / stress=$MODE (전용 ${ISO}대)"
+echo "   도메인 $DOMAINS, Karpenter 공유 상한 ${LIMIT}vCPU, stress 상한 ${STRESS_LIMIT}vCPU"
 
 # stress 배치 모드 전환
 if [ "$ISO" = "0" ]; then
@@ -89,14 +97,18 @@ reclaim() {   # $1=풀이름 $2=목표 노드수
     bx "kubectl get nodeclaim -l karpenter.sh/nodepool=$1 --no-headers | awk '{print \$1}' | head -$drop | xargs -r kubectl delete nodeclaim"
   fi
 }
-reclaim apdev-pool "$KARP"
+if [ "$CAP" = "$T" ]; then
+  reclaim apdev-pool "$KARP"
+else
+  echo "-- 상한이 열려 있다($CAP 대) — 자동 증설분은 회수하지 않는다"
+fi
 reclaim apdev-stress-pool "$ISO"
 
-echo "-- 노드 $T 대로 수렴 대기 (증가/감소 양방향)"
+echo "-- 노드 $T 대 이상으로 수렴 대기 (상한 $CAP)"
 for i in $(seq 1 40); do
   n=$(bx "kubectl get nodes --no-headers | wc -l" | tr -d ' \n')
-  echo "   ${i}: ${n}대 (목표 $T)"
-  [ "${n:-0}" = "$T" ] && break
+  echo "   ${i}: ${n}대 (하한 $T / 상한 $CAP)"
+  [ "${n:-0}" -ge "$T" ] && [ "${n:-0}" -le "$CAP" ] && break
   sleep 20
 done
 bx "kubectl get nodes -L role --no-headers | awk '{print \$1, \$6}'

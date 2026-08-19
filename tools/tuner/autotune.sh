@@ -197,7 +197,8 @@ once() {
     return 0
   fi
   echo "   구성 변경: ${cur:-미설정} → $nodes/$mode (예상 $score)"
-  ./apply.sh "$nodes" "$mode" | tail -3
+  # 트래픽을 실제로 측정한 뒤이므로 상한을 하한까지 좁힌다 (비용 확정).
+  ./apply.sh "$nodes" "$mode" "$nodes" | tail -3
   echo "$nodes $mode" > "$STATE"
 }
 
@@ -275,11 +276,15 @@ prepare() {
     done
   fi
 
-  # 콜드 스타트: 트래픽을 모를 때의 기본값.
-  #   노드 2대(비용 만점 지점) + stress 동거 + stress CPU 지분 낮춤.
-  #   부족하면 트래픽이 들어온 뒤 run 루프가 알아서 늘린다.
-  echo "== 콜드 스타트 구성 적용"
-  ./apply.sh "${COLD_NODES:-2}" "${COLD_MODE:-shared}" | tail -3
+  # 콜드 스타트: 트래픽 규모를 모르는 상태에서의 시작 구성.
+  #   ★하한과 상한을 분리한다.
+  #     하한 2대  — 비용 만점 지점이자 고가용성 최소선. 트래픽이 가벼우면 여기 머문다.
+  #     상한 6대  — 스파이크가 오면 Karpenter 가 알아서 늘릴 수 있게 열어둔다.
+  #   상한까지 묶으면 예상 못 한 스파이크에 노드를 못 만들고 무너진다(실측 22.5점).
+  #   점수는 트래픽 구간 '평균'이라, 초반 몇 분 노드가 많은 것보다 성능이 무너지는 게 훨씬 비싸다.
+  #   트래픽을 재고 나면 run 루프가 상한을 하한까지 좁혀 비용을 확정한다.
+  echo "== 콜드 스타트 구성 적용 (하한 ${COLD_NODES:-2} / 상한 ${COLD_CAP:-6})"
+  ./apply.sh "${COLD_NODES:-2}" "${COLD_MODE:-shared}" "${COLD_CAP:-6}" | tail -3
   ./tune_requests.sh "${COLD_STRESS_REQ:-100m}" | tail -1
   echo "${COLD_NODES:-2} ${COLD_MODE:-shared}" > "$STATE"
 
