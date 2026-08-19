@@ -16,3 +16,8 @@ tools/tuner/.autotune-state
 tools/tuner/sweep-*.tsv
 tools/tuner/curves-*/
 tools/tuner/*.bak
+
+# 튜너 측정 중 만드는 임시 백업
+tools/tuner/*.len*.json
+tools/tuner/autotune.log
+tools/tuner/pretable.tsv
