@@ -40,6 +40,12 @@ spec:
       expireAfter: 720h
   # ★캡 12CPU(6대): 안전망. 실제 노드 수는 HPA가 결정 (보통 2~3대).
   limits:
+    # ★노드 수 상한. minDomains 는 하한만 정한다 —
+    #   상한이 없으면 HPA 가 파드를 늘리는 만큼 Karpenter 가 노드를 계속 붙인다
+    #   (실측: x1.0 에서 9대까지 증식 → 비용 0/12, 총점 28.0).
+    #   cpu = 공유노드수 × vCPU. t3.medium 3대면 6.
+    #   최적 노드 수는 부하에 따라 달라진다 — tools/tuner 의 solve.py 로 구하고
+    #   apply.sh 가 이 값과 minDomains 를 함께 맞춘다.
     cpu: "12"
     memory: 24Gi
   disruption:
@@ -76,3 +82,47 @@ spec:
     httpTokens: required
   kubelet:
     maxPods: 110
+
+---
+# ★stress 전용 노드풀.
+#   taint 로 격리해 user/product 가 절대 같은 노드에 앉지 않게 한다.
+#     · CFS 는 requests 비율로 CPU 를 나눈다(stress 600m : user 70m ≈ 8.6:1) → 같은 노드면 user 가 굶는다.
+#     · podAntiAffinity 로 막으면 이 노드가 topologySpread 에서 "영원히 0개인 도메인" 으로 남아
+#       maxSkew 를 계속 위반한다 → DoNotSchedule 과 함께 쓰면 노드가 무한 증식한다.
+#     · taint 면 user/product 의 nodeTaintsPolicy: Honor 가 이 노드를 도메인 계산에서 제외한다.
+#   stress 는 nodeSelector(role: stress) + toleration 으로 여기에만 앉는다(deploy.yaml).
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: ${name}-stress-pool
+spec:
+  template:
+    metadata:
+      labels:
+        role: stress
+    spec:
+      taints:
+        - key: workload
+          value: stress
+          effect: NoSchedule
+      nodeClassRef:
+        group: karpenter.k8s.aws
+        kind: EC2NodeClass
+        name: ${name}-nodeclass
+      requirements:
+        - key: kubernetes.io/arch
+          operator: In
+          values: ["amd64"]
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["on-demand"]
+        - key: node.kubernetes.io/instance-type
+          operator: In
+          values: ["${node_instance_type}"]
+      expireAfter: 720h
+  limits:
+    cpu: "8"
+    memory: 16Gi
+  disruption:
+    consolidationPolicy: WhenEmptyOrUnderutilized
+    consolidateAfter: 60s

@@ -1,0 +1,10 @@
+{
+  "path_ms": 14.5,
+  "burst_beta": 1.75,
+  "cfs_severity": 0.0,
+  "curve_scale": {
+    "product": 0.691,
+    "stress": 0.4,
+    "user": 0.631
+  }
+}

@@ -1,1 +1,23 @@
-.terraform/
+# terraform state 에는 DB 비밀번호 등 평문 비밀이 들어간다 — 절대 커밋 금지
+terraform/terraform.tfstate
+terraform/terraform.tfstate.*
+terraform/.terraform/
+terraform/.terraform.lock.hcl
+terraform/tfplan*
+terraform/*.auto.tfvars
+
+# 튜너 실행 산출물 (환경마다 달라짐)
+tools/tuner/sweep-*.tsv
+terraform/.terraform.tfstate.lock.info
+
+# 튜너 로컬 설정·산출물 (접속 정보 포함 — 커밋 금지)
+tools/tuner/.env
+tools/tuner/.autotune-state
+tools/tuner/sweep-*.tsv
+tools/tuner/curves-*/
+tools/tuner/*.bak
+
+# 튜너 측정 중 만드는 임시 백업
+tools/tuner/*.len*.json
+tools/tuner/autotune.log
+tools/tuner/pretable.tsv

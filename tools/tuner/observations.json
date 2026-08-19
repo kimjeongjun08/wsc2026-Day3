@@ -1,0 +1,244 @@
+{
+  "rounds": [
+    {
+      "note": "x0.5 2노드 stress격리 (37.0)",
+      "traffic": {
+        "user_post": 11.0,
+        "user_get": 11.0,
+        "product_get": 22.5,
+        "product_post": 1.5,
+        "stress": 1.25
+      },
+      "nodes": 2,
+      "mode": "iso",
+      "observed": {
+        "user": 63.8,
+        "product": 102.05,
+        "stress": 95.8
+      }
+    },
+    {
+      "note": "x0.5 2노드 stress동거 +bastion (36.0)",
+      "traffic": {
+        "user_post": 11.0,
+        "user_get": 11.0,
+        "product_get": 22.5,
+        "product_post": 1.5,
+        "stress": 1.25
+      },
+      "nodes": 2,
+      "mode": "shared",
+      "observed": {
+        "user": 86.88,
+        "product": 108.25,
+        "stress": 93.44
+      }
+    },
+    {
+      "note": "x0.5 3노드 stress격리 (38.0)",
+      "traffic": {
+        "user_post": 11.0,
+        "user_get": 11.0,
+        "product_get": 22.5,
+        "product_post": 1.5,
+        "stress": 1.25
+      },
+      "nodes": 3,
+      "mode": "iso",
+      "observed": {
+        "user": 96.84,
+        "product": 112.87,
+        "stress": 95.46
+      }
+    },
+    {
+      "note": "x0.5 5노드 stress격리 (33.0)",
+      "traffic": {
+        "user_post": 11.0,
+        "user_get": 11.0,
+        "product_get": 22.5,
+        "product_post": 1.5,
+        "stress": 1.25
+      },
+      "nodes": 5,
+      "mode": "iso",
+      "observed": {
+        "user": 96.99,
+        "product": 112.83,
+        "stress": 93.44
+      }
+    },
+    {
+      "note": "x1.0 4노드 stress격리 (33.5)",
+      "traffic": {
+        "user_post": 22.0,
+        "user_get": 22.0,
+        "product_get": 45.0,
+        "product_post": 3.0,
+        "stress": 2.5
+      },
+      "nodes": 4,
+      "mode": "iso",
+      "observed": {
+        "user": 74.28,
+        "product": 107.43,
+        "stress": 93.78
+      }
+    },
+    {
+      "note": "x1.0 8노드 stress격리",
+      "traffic": {
+        "user_post": 22.0,
+        "user_get": 22.0,
+        "product_get": 45.0,
+        "product_post": 3.0,
+        "stress": 2.5
+      },
+      "nodes": 8,
+      "mode": "iso",
+      "observed": {
+        "user": 92.3,
+        "product": 107.5,
+        "stress": 92.5
+      }
+    },
+    {
+      "note": "x0.5 2노드 동거 stress-req 200m (39.5)",
+      "traffic": {
+        "user_post": 11.0,
+        "user_get": 11.0,
+        "product_get": 22.5,
+        "product_post": 1.5,
+        "stress": 1.25
+      },
+      "nodes": 2,
+      "mode": "shared",
+      "stress_req_m": 200,
+      "observed": {
+        "user": 89.29,
+        "product": 110.16,
+        "stress": 93.78
+      }
+    },
+    {
+      "note": "x0.5 2노드 동거 stress-req 100m (40.0 만점)",
+      "traffic": {
+        "user_post": 11.0,
+        "user_get": 11.0,
+        "product_get": 22.5,
+        "product_post": 1.5,
+        "stress": 1.25
+      },
+      "nodes": 2,
+      "mode": "shared",
+      "stress_req_m": 100,
+      "observed": {
+        "user": 93.27,
+        "product": 111.31,
+        "stress": 92.39
+      }
+    },
+    {
+      "note": "stress헤비 2노드 동거 (22.5, 비용게이트)",
+      "traffic": {
+        "user_post": 11,
+        "user_get": 11,
+        "product_get": 22.5,
+        "product_post": 1.5,
+        "stress": 7
+      },
+      "nodes": 2,
+      "mode": "shared",
+      "stress_req_m": 100,
+      "observed": {
+        "user": 84.88,
+        "product": 107.76,
+        "stress": 26.04
+      }
+    },
+    {
+      "note": "stress헤비 3노드 iso2 (32.0)",
+      "traffic": {
+        "user_post": 11,
+        "user_get": 11,
+        "product_get": 22.5,
+        "product_post": 1.5,
+        "stress": 7
+      },
+      "nodes": 3,
+      "mode": "iso2",
+      "stress_req_m": 100,
+      "observed": {
+        "user": 66.54,
+        "product": 100.45,
+        "stress": 62.58
+      }
+    },
+    {
+      "note": "user헤비 3노드 iso (34.5)",
+      "traffic": {
+        "user_post": 33,
+        "user_get": 33,
+        "product_get": 22.5,
+        "product_post": 1.5,
+        "stress": 1.25
+      },
+      "nodes": 3,
+      "mode": "iso",
+      "stress_req_m": 100,
+      "observed": {
+        "user": 49.53,
+        "product": 103.72,
+        "stress": 95.24
+      }
+    },
+    {
+      "note": "x0.5 2노드 동거 req100m 재현 (40.0 만점, 2회차)",
+      "traffic": {
+        "user_post": 11,
+        "user_get": 11,
+        "product_get": 22.5,
+        "product_post": 1.5,
+        "stress": 1.25
+      },
+      "nodes": 2,
+      "mode": "shared",
+      "stress_req_m": 100,
+      "observed": {
+        "user": 91.61,
+        "product": 111.0,
+        "stress": 93.04
+      }
+    },
+    {
+      "note": "x1.0 4노드 iso2 (33.5, 예측 33.0)",
+      "traffic": {
+        "user_post": 22,
+        "user_get": 22,
+        "product_get": 45,
+        "product_post": 3,
+        "stress": 2.5
+      },
+      "nodes": 4,
+      "mode": "iso2",
+      "stress_req_m": 100,
+      "observed": {
+        "user": 73.15,
+        "product": 108.39,
+        "stress": 93.07
+      }
+    }
+  ],
+  "path_samples": [
+    {
+      "grader_p50": 15.2,
+      "incluster_p50": 1.1,
+      "note": "product GET, x0.5 스파이크 중 동시 측정"
+    },
+    {
+      "grader_p50": 16.0,
+      "incluster_p50": 1.1,
+      "note": "product GET, 다음 분"
+    }
+  ]
+}

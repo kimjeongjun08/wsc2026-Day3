@@ -1,0 +1,49 @@
+{
+  "app": "user",
+  "verb": "post",
+  "vcpu_per_pod_node": 2,
+  "points": [
+    {
+      "concurrency": 1,
+      "p50_ms": 20.2,
+      "p90_ms": 32.1,
+      "rps": 32.8,
+      "failed": 0
+    },
+    {
+      "concurrency": 2,
+      "p50_ms": 22.3,
+      "p90_ms": 45.5,
+      "rps": 52.3,
+      "failed": 0
+    },
+    {
+      "concurrency": 4,
+      "p50_ms": 30.3,
+      "p90_ms": 54.2,
+      "rps": 73.2,
+      "failed": 0
+    },
+    {
+      "concurrency": 8,
+      "p50_ms": 46.8,
+      "p90_ms": 85.7,
+      "rps": 80.2,
+      "failed": 0
+    },
+    {
+      "concurrency": 16,
+      "p50_ms": 96.5,
+      "p90_ms": 201.0,
+      "rps": 61.6,
+      "failed": 0
+    },
+    {
+      "concurrency": 32,
+      "p50_ms": 165.3,
+      "p90_ms": 300.3,
+      "rps": 82.1,
+      "failed": 0
+    }
+  ]
+}

@@ -82,8 +82,12 @@ resource "aws_db_proxy_default_target_group" "this" {
   db_proxy_name = aws_db_proxy.this.name
 
   connection_pool_config {
-    max_connections_percent      = 90
-    max_idle_connections_percent = 50
+    # ★백엔드 커넥션 상한 = DB 의 max_connections × 이 비율.
+    #   rds.tf 에서 max_connections 를 150 으로 올렸으므로 여기서 100% 를 주면 150 이 된다.
+    #   90 → 100 자체의 효과는 작지만(24→27), max_connections 수정과 짝이라 같이 올린다.
+    max_connections_percent = 100
+    # ★유휴 커넥션을 넉넉히 유지한다. 낮으면 스파이크 때 매번 새로 맺느라 borrow 가 늦다.
+    max_idle_connections_percent = 90
     connection_borrow_timeout    = 15
   }
 }

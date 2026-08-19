@@ -25,20 +25,10 @@ spec:
     spec:
       terminationGracePeriodSeconds: 35
       priorityClassName: high-priority
-      # stress 노드엔 안 앉음(stress가 노드 독차지 → 코어 경합 0, stress 30%↑ 유지).
-      affinity:
-        # ① MNG(상시 켜진 노드) 선호 — MNG = karpenter.sh/nodepool 라벨이 없는 노드.
-        # ★nodeAffinity 제거: DoesNotExist를 쓰면 Karpenter가 노드 생성을 건너뛴다 (실측).
-        #   MNG 선호는 불필요 — 스케줄러가 request 작은 파드를 빈 자리에 자연스럽게 넣는다.
-        # ★stress와는 절대 같은 노드에 앉지 않는다 (required).
-        podAntiAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            - topologyKey: kubernetes.io/hostname
-              labelSelector:
-                matchExpressions:
-                  - key: app
-                    operator: In
-                    values: ["stress"]
+      # ★stress 격리는 taint 로 한다(karpenter.yaml 의 stress 전용 NodePool).
+      #   podAntiAffinity 로 막으면 stress 노드가 topologySpread 에서 "영원히 0개인 도메인" 으로
+      #   남아 maxSkew 를 계속 위반한다 → DoNotSchedule 과 함께 쓰면 노드가 무한 증식한다.
+      #   taint 면 nodeTaintsPolicy: Honor 가 그 노드를 도메인 계산에서 아예 제외한다.
       dnsConfig:
         options:
           - name: ndots
@@ -49,13 +39,28 @@ spec:
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname
-          whenUnsatisfiable: ScheduleAnyway
+          # ★DoNotSchedule: ScheduleAnyway 는 "가능하면" 이라 자리가 있으면 그냥 쌓인다.
+          #   실측(x0.5, 동일 클러스터): ScheduleAnyway → 18pods/node, p50 192ms, 35.0점
+          #                              DoNotSchedule  → 11pods/node, p50  93ms, 38.0점
+          #   Karpenter 는 requests 합계만 보므로 CPU 가 남으면 노드를 안 부른다 →
+          #   강제하지 않으면 밀도가 부하에 비례해 그대로 올라간다.
+          whenUnsatisfiable: DoNotSchedule
+          # taint 걸린 stress 노드를 도메인 계산에서 제외한다.
+          nodeTaintsPolicy: Honor
+          # ★minDomains 2: 도메인(=스케줄 가능한 노드)이 1개뿐이면 skew 는 항상 0 이라
+          #   DoNotSchedule 이 아무것도 막지 못한다 → 파드가 Pending 되지 않고 한 노드에 쌓인다.
+          #   Karpenter 는 Pending 파드를 보고 움직이므로, 그때까지 노드를 만들지 않는다.
+          #   실측(x0.5, MNG desired=1): 스파이크 진입 후 3분간 1노드에 user 12개 →
+          #     up50 176ms, user 성능 80% (2점 손실). 노드는 뒤늦게 3분 후에야 추가됐다.
+          #   minDomains 2 면 도메인이 부족할 때 파드를 즉시 Pending 시켜 Karpenter 를 깨운다.
+          #   부하 크기를 미리 알 필요가 없다 — 스케줄러가 알아서 하한을 강제한다.
+          minDomains: 2
           labelSelector:
             matchLabels:
               app: user
       containers:
         - name: user
-          image: 003150130236.dkr.ecr.ap-northeast-2.amazonaws.com/apdev-user:latest
+          image: ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/PROJECT-user:latest
           ports:
             - containerPort: 8080
           envFrom:
@@ -122,24 +127,10 @@ spec:
     spec:
       terminationGracePeriodSeconds: 35
       priorityClassName: high-priority
-      # stress 노드엔 안 앉음(stress가 노드 독차지 → 코어 경합 0, stress 30%↑ 유지).
-      affinity:
-        # ① MNG(상시 켜진 노드) 선호 — MNG = karpenter.sh/nodepool 라벨이 없는 노드.
-        # ★nodeAffinity 제거: DoesNotExist를 쓰면 Karpenter가 노드 생성을 건너뛴다 (실측).
-        #   MNG 선호는 불필요 — 스케줄러가 request 작은 파드를 빈 자리에 자연스럽게 넣는다.
-        # ② user·product는 서로 같은 노드에 모인다 (podAffinity).
-        #   ★근거: 둘 다 request가 작고(70m) CPU limit이 없어 한 노드에 수십 개가 들어간다.
-        #     흩어지면 각자 노드를 차지해 같은 파드 수인데 노드가 늘어난다(비용 손실).
-        #     MNG를 넘어 Karpenter 노드로 갈 때도 '함께' 가야 노드 하나를 공유한다.
-        # ★stress와는 절대 같은 노드에 앉지 않는다 (required).
-        podAntiAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            - topologyKey: kubernetes.io/hostname
-              labelSelector:
-                matchExpressions:
-                  - key: app
-                    operator: In
-                    values: ["stress"]
+      # ★stress 격리는 taint 로 한다(karpenter.yaml 의 stress 전용 NodePool).
+      #   podAntiAffinity 로 막으면 stress 노드가 topologySpread 에서 "영원히 0개인 도메인" 으로
+      #   남아 maxSkew 를 계속 위반한다 → DoNotSchedule 과 함께 쓰면 노드가 무한 증식한다.
+      #   taint 면 nodeTaintsPolicy: Honor 가 그 노드를 도메인 계산에서 아예 제외한다.
       dnsConfig:
         options:
           - name: ndots
@@ -147,13 +138,28 @@ spec:
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname
-          whenUnsatisfiable: ScheduleAnyway
+          # ★DoNotSchedule: ScheduleAnyway 는 "가능하면" 이라 자리가 있으면 그냥 쌓인다.
+          #   실측(x0.5, 동일 클러스터): ScheduleAnyway → 18pods/node, p50 192ms, 35.0점
+          #                              DoNotSchedule  → 11pods/node, p50  93ms, 38.0점
+          #   Karpenter 는 requests 합계만 보므로 CPU 가 남으면 노드를 안 부른다 →
+          #   강제하지 않으면 밀도가 부하에 비례해 그대로 올라간다.
+          whenUnsatisfiable: DoNotSchedule
+          # taint 걸린 stress 노드를 도메인 계산에서 제외한다.
+          nodeTaintsPolicy: Honor
+          # ★minDomains 2: 도메인(=스케줄 가능한 노드)이 1개뿐이면 skew 는 항상 0 이라
+          #   DoNotSchedule 이 아무것도 막지 못한다 → 파드가 Pending 되지 않고 한 노드에 쌓인다.
+          #   Karpenter 는 Pending 파드를 보고 움직이므로, 그때까지 노드를 만들지 않는다.
+          #   실측(x0.5, MNG desired=1): 스파이크 진입 후 3분간 1노드에 user 12개 →
+          #     up50 176ms, user 성능 80% (2점 손실). 노드는 뒤늦게 3분 후에야 추가됐다.
+          #   minDomains 2 면 도메인이 부족할 때 파드를 즉시 Pending 시켜 Karpenter 를 깨운다.
+          #   부하 크기를 미리 알 필요가 없다 — 스케줄러가 알아서 하한을 강제한다.
+          minDomains: 2
           labelSelector:
             matchLabels:
               app: product
       containers:
         - name: product
-          image: 003150130236.dkr.ecr.ap-northeast-2.amazonaws.com/apdev-product:latest
+          image: ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/PROJECT-product:latest
           ports:
             - containerPort: 8080
           envFrom:
@@ -220,28 +226,27 @@ spec:
     spec:
       terminationGracePeriodSeconds: 35
       priorityClassName: normal-priority
-      # ★stress: nodeAffinity 없음. MNG에도 앉을 수 있다.
-      #   priority가 낮아(500) user/product(1000)가 preempt 가능 → 역전 걱정 없음.
-      #   평시: MNG에 stress가 앉아 노드 1대로 운영 (비용 최소).
-      #   스파이크: user/product가 MNG를 필요로 하면 stress를 밀어냄 → Karpenter로 이동.
-      affinity:
-        podAntiAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            - topologyKey: kubernetes.io/hostname
-              labelSelector:
-                matchExpressions:
-                  - key: app
-                    operator: In
-                    values: ["user", "product", "stress"]
+      # ★stress 전용 노드풀(taint workload=stress)에만 앉는다 — karpenter.yaml 참고.
+      #   CFS 는 requests 비율로 CPU 를 나눈다(stress 600m : user 70m ≈ 8.6:1) →
+      #   같은 노드에 두면 부하가 몰릴 때 user 가 굶는다. 격리 가치는 부하가 클수록 커진다.
+      #   anti-affinity 가 아니라 taint 로 격리하는 이유: user/product 의 topologySpread 가
+      #   nodeTaintsPolicy: Honor 로 이 노드를 도메인 계산에서 제외할 수 있기 때문이다.
+      #   (anti-affinity 는 도메인에서 제외되지 않아 "0개 도메인" 이 되어 노드가 무한 증식한다)
+      nodeSelector:
+        role: stress
+      tolerations:
+        - key: workload
+          value: stress
+          effect: NoSchedule
+          operator: Equal
       dnsConfig:
         options:
           - name: ndots
             value: "2"
-      # topologySpread 없음 — 위 required anti-affinity가 '노드당 1파드'를 보장한다.
-      #   maxSkew는 soft라 자리가 없으면 뭉치므로 이 앱에는 부족하다.
+      # topologySpread 없음 — 전용 노드풀이라 user/product 와 섞이지 않는다.
       containers:
         - name: stress
-          image: 003150130236.dkr.ecr.ap-northeast-2.amazonaws.com/apdev-stress:latest
+          image: ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/PROJECT-stress:latest
           ports:
             - containerPort: 8080
           env:

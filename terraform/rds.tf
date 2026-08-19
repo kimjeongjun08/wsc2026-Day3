@@ -51,6 +51,12 @@ resource "aws_db_parameter_group" "mysql8" {
     name  = "long_query_time"
     value = "0.5"
   }
+  # ★max_connections 는 기본 공식 {DBInstanceClassMemory/12582880} 을 그대로 쓴다.
+  #   db.t3.micro 에서는 27 밖에 안 나오고 RDS Proxy 백엔드 상한이 24 로 잡히지만,
+  #   150 으로 올려(백엔드 72) 재측정한 결과 점수·지연이 전혀 변하지 않았다 —
+  #   x1.0 스파이크: user perf 74.28% → 73.94%, up50 165ms → 165ms (오차 범위).
+  #   BorrowLatency 70~80ms 도 그대로였다. 즉 커넥션 개수는 병목이 아니다.
+  #   올리면 FreeableMemory 가 51MB 까지 떨어져 손해만 본다.
 }
 
 resource "aws_db_instance" "this" {
@@ -60,8 +66,11 @@ resource "aws_db_instance" "this" {
   instance_class        = var.db_instance_class
   allocated_storage     = var.db_allocated_storage
   storage_type          = "gp3"
-  iops                  = var.db_allocated_storage >= 400 ? 64000 : null
-  storage_throughput    = var.db_allocated_storage >= 400 ? 4000 : null
+  # ★iops / storage_throughput 은 명시하지 않는다 = gp3 기준선(추가 과금 없음).
+  #   < 400 GiB :  3,000 IOPS / 125 MiB/s     >= 400 GiB: 12,000 IOPS / 500 MiB/s
+  #   기준선을 넘겨 프로비저닝하면 별도 과금되고 Multi-AZ 라 2배로 붙는다(시간당 $2~3 규모).
+  #   그리고 db.t3.micro 는 그만큼 쓸 수 있는 인스턴스가 아니다 —
+  #   실측 최대 WriteIOPS 1,573 / ReadIOPS 35 로 기준선의 일부만 쓴다.
   multi_az          = true
 
   db_name  = var.db_name

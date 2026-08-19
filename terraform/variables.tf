@@ -63,3 +63,9 @@ variable "app_image_tag" {
   default     = "latest"
   description = "Tag of the user/product/stress images pushed to ECR"
 }
+
+variable "bastion_enabled" {
+  description = "설치용 bastion 생성 여부. 설치가 끝나면 false 로 다시 apply 해서 없앤다(비용 지표·스펙 준수)."
+  type        = bool
+  default     = true
+}
