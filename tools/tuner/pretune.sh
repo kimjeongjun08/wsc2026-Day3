@@ -34,18 +34,52 @@ if [ -z "$ENDPOINT" ]; then
 fi
 [ -z "$ENDPOINT" ] && { echo "ENDPOINT 를 찾지 못했다 — 환경변수로 넘겨라" >&2; exit 1; }
 
-CANDS=${1:-"2:shared 3:shared 3:iso 4:iso 4:iso2"}
 RPS=${RPS:-50}                 # 총 목표 초당 요청수
-DUR=${DUR:-45}                 # 후보당 부하 시간(초)
+# 후보당 부하 시간(초).
+#   stress 는 전체의 3% 뿐이라 판정에 필요한 150건을 채우려면 시간이 든다.
+#     필요 시간 ≈ 150 / (실제달성rps × 0.03)
+#   주의: '실제 달성 rps' 는 목표보다 낮게 나온다(페이싱 + 응답 대기).
+#   노드가 많은 구성일수록 응답이 빨라 오히려 총 요청이 줄어드는 경우도 있다.
+#   표본이 모자라면 결과에 '표본부족' 으로 찍히니, 그때는 DUR 을 올려서 다시 재라.
+DUR=${DUR:-180}
 POST_RATIO=${POST_RATIO:-10}   # POST 비율(%) — DB 오염을 줄이려고 기본 10%
 OUT=${OUT:-pretune-results.tsv}
 
 # 앱별 요청 비율. 채점 주입기의 기본 비율(user:product:stress ≈ 44:48:2.5)을 따른다.
 W_USER=${W_USER:-44}
 W_PRODUCT=${W_PRODUCT:-48}
+# ★비율은 채점 주입기와 똑같이 둔다. 절대 바꾸지 마라.
+#   표본을 늘리려고 stress 비율을 3% → 12% 로 올린 적이 있는데, 그러면 stress 가
+#   실제보다 4배 무거운 것처럼 보여 격리 구성이 유리하게 나온다. 판단이 실제로 뒤집혔다:
+#     채점 x0.5(47rps)              최적 = 2노드/shared (40.0)
+#     pretune(45rps, stress 12%)    최적 = 4노드/iso2   (33.5)
+#   측정 편의로 넣은 값이 결론을 왜곡한 것이다. 표본은 비율이 아니라 시간으로 확보한다.
 W_STRESS=${W_STRESS:-3}
 
 SLA_USER=200; SLA_PRODUCT=200; SLA_STRESS=1000
+
+# 후보를 안 주면 솔버가 알아서 고른다.
+#   사람이 "2:shared 3:iso ..." 같은 조합을 외워서 타이핑할 이유가 없다.
+#   solve.py 가 곡선과 트래픽으로 상위 후보를 뽑고, 그것들만 실제로 세워서 재면 된다.
+CANDS=${1:-}
+if [ -z "$CANDS" ]; then
+  TRAFFIC=${TRAFFIC:-}
+  if [ -z "$TRAFFIC" ]; then
+    # 트래픽을 모르면 자체 부하 목표(RPS)를 채점 주입기 비율로 나눠 쓴다
+    TRAFFIC=$(python3 -c "
+r=$RPS; tot=$W_USER+$W_PRODUCT+$W_STRESS
+u=r*$W_USER/tot; p=r*$W_PRODUCT/tot; s=r*$W_STRESS/tot
+import json; print(json.dumps({'user_post':round(u*0.1,2),'user_get':round(u*0.9,2),
+ 'product_get':round(p*0.9,2),'product_post':round(p*0.1,2),'stress':round(s,2)}))")
+  fi
+  # ★후보는 기본 2개다. 후보 하나당 노드 재구성에 5~8분이 걸려서,
+  #   대회의 1시간 예산에 4개는 안 들어간다(실측). 솔버 1·2위만 실제로 확인한다.
+  CANDS=$(python3 solve.py --traffic "$TRAFFIC" --min-nodes 2 --max-nodes 6 --top "${TOP:-2}" 2>/dev/null \
+          | awk '/^ *[0-9]+ +(shared|iso[0-9]*) /{print $1":"$2}' | awk '!seen[$0]++' | head -"${TOP:-2}")
+  CANDS=$(echo $CANDS | tr "\n" " ")
+  [ -z "$CANDS" ] && CANDS="2:shared 3:shared 3:iso"
+  echo "   (후보 자동 선정: $CANDS)"
+fi
 
 # 워커 수. 각 워커는 PACE_MS 간격으로 쏘므로 총 rps ≈ WORKERS / (PACE_MS/1000) = RPS 가 된다.
 WORKERS=${WORKERS:-24}
@@ -139,42 +173,34 @@ run_load() {   # 결과: 앱별 통과율과 달성 rps
 
 [ -f "$OUT" ] || printf "구성\tuser%%\tproduct%%\tstress%%\t성능\t비용\t합계\t달성rps\tPOST건수\n" > "$OUT"
 
+# 중간에 끊겨도 워커 파드를 남기지 않는다
+trap 'bx "kubectl -n $NS delete pod loadgen --ignore-not-found >/dev/null 2>&1" >/dev/null 2>&1' EXIT INT TERM
+
 BEST=""; BEST_SCORE=-1
+DONE_LIST=""
 for C in $CANDS; do
+  # 같은 구성을 두 번 재면 시간만 버린다 (실측: 상위 2개가 둘 다 4:iso2 로 나온 적 있음)
+  case " $DONE_LIST " in (*" $C "*) echo "   (중복 후보 $C 건너뜀)"; continue ;; esac
+  DONE_LIST="$DONE_LIST $C"
   T=${C%%:*}; MODE=${C##*:}
   echo "########## 후보: ${T}노드 / stress=$MODE ##########"
   ./apply.sh "$T" "$MODE" "$T" >/dev/null 2>&1
   echo "$T $MODE" > "${STATE:-.autotune-state}"
-  # 안정화될 때까지 기다린다 (트래픽 전이라 여유가 있다)
-  for i in $(seq 1 40); do ./autotune.sh ready >/dev/null 2>&1 && break; sleep 15; done
+  # ★안정화 판정에서 '변경 후 2분 경과' 규칙은 빼고 기다린다.
+  #   그 규칙은 채점 트래픽을 받기 직전에 필요한 것이고, 여기선 시간만 먹는다.
+  #   파드가 다 뜨고 ALB 타깃이 healthy 면 부하를 넣어도 된다.
+  for i in $(seq 1 40); do
+    READY=$(./autotune.sh ready 2>&1 | grep -c '^   \[X\]' || true)
+    BLOCK=$(./autotune.sh ready 2>&1 | grep '^   \[X\]' | grep -vc '구성 변경' || true)
+    [ "${BLOCK:-1}" = 0 ] && break
+    sleep 10
+  done
 
   # ★워커 파드는 구성 변경 때 같이 죽을 수 있다(노드 회수). 후보마다 다시 띄운다.
   #   예전엔 한 번만 띄웠다가, 노드가 줄어드는 후보에서 워커가 사라져 결과가 전부 0 이 됐다.
   start_driver
   RAW=$(run_load)
-  printf '%s\n' "$RAW" | python3 -c "
-import sys
-sla={'user':0.2,'product':0.2,'stress':1.0}
-ok={}; tot={}; posts=0; n=0
-for l in sys.stdin:
-    p=l.split()
-    if len(p)!=4: continue
-    app,m,code,t=p[0],p[1],p[2],float(p[3])
-    if m=='POST': posts+=1
-    n+=1
-    if not code.startswith('2'): continue
-    tot[app]=tot.get(app,0)+1
-    if t<=sla.get(app,0.2): ok[app]=ok.get(app,0)+1
-PERF=[90,87.5,85,82.5,80,70,50,30]
-def pts(p): return sum(0.5 for x in PERF if p>=x)
-res={}
-for a in ('user','product','stress'):
-    res[a]=100.0*ok.get(a,0)/tot[a] if tot.get(a) else 0.0
-perf=sum(pts(res[a]) for a in res)
-gate=min(res.values()) if res else 0
-cost=sum(1.0 for i in range(12) if 1.0+0.25*i >= $T/2.0) if gate>=30 else 0.0
-print(f\"{res['user']:.2f}\t{res['product']:.2f}\t{res['stress']:.2f}\t{perf:.1f}\t{cost:.1f}\t{4+12+perf+cost:.1f}\t{n/$DUR:.1f}\t{posts}\")
-" > /tmp/pre_row.txt
+  printf '%s\n' "$RAW" | python3 score_pretune.py "$T" "$DUR" > /tmp/pre_row.txt
   ROW=$(cat /tmp/pre_row.txt)
   ACHIEVED=$(echo "$ROW" | cut -f7)
   if [ "$(python3 -c "print(1 if ${ACHIEVED:-0} < 1 else 0)")" = 1 ]; then

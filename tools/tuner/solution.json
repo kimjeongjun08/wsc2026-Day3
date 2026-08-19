@@ -5,53 +5,25 @@
     "path_ms": 14.5,
     "cores": 4.0,
     "cost_gated": false,
-    "rho": 0.395,
-    "perf": 11.5,
+    "rho": 0.138,
+    "perf": 10.5,
     "cost": 10.0,
-    "total": 37.5,
+    "total": 36.5,
     "apps": {
-      "product": {
-        "rho": 55.974,
-        "pass_pct": 99.9,
-        "points": 4.0
-      },
-      "stress": {
-        "rho": 4.515,
-        "pass_pct": 96.1,
-        "points": 4.0
-      },
       "user": {
-        "rho": 55.974,
-        "pass_pct": 87.9,
+        "rho": 34.825,
+        "pass_pct": 88.5,
         "points": 3.5
-      }
-    }
-  },
-  {
-    "nodes": 4,
-    "mode": "iso",
-    "path_ms": 14.5,
-    "cores": 6.0,
-    "cost_gated": false,
-    "rho": 0.264,
-    "perf": 12.0,
-    "cost": 8.0,
-    "total": 36.0,
-    "apps": {
+      },
       "product": {
-        "rho": 37.316,
+        "rho": 34.825,
         "pass_pct": 99.9,
         "points": 4.0
       },
       "stress": {
-        "rho": 4.515,
-        "pass_pct": 96.1,
-        "points": 4.0
-      },
-      "user": {
-        "rho": 37.316,
-        "pass_pct": 92.1,
-        "points": 4.0
+        "rho": 9.083,
+        "pass_pct": 86.5,
+        "points": 3.0
       }
     }
   },
@@ -61,53 +33,53 @@
     "path_ms": 14.5,
     "cores": 4.0,
     "cost_gated": false,
-    "rho": 0.395,
+    "rho": 0.138,
     "perf": 11.5,
     "cost": 8.0,
     "total": 35.5,
     "apps": {
+      "user": {
+        "rho": 34.825,
+        "pass_pct": 88.5,
+        "points": 3.5
+      },
       "product": {
-        "rho": 55.974,
+        "rho": 34.825,
         "pass_pct": 99.9,
         "points": 4.0
       },
       "stress": {
-        "rho": 2.258,
-        "pass_pct": 99.8,
+        "rho": 4.541,
+        "pass_pct": 95.9,
         "points": 4.0
-      },
-      "user": {
-        "rho": 55.974,
-        "pass_pct": 87.9,
-        "points": 3.5
       }
     }
   },
   {
-    "nodes": 5,
+    "nodes": 4,
     "mode": "iso",
     "path_ms": 14.5,
-    "cores": 8.0,
+    "cores": 6.0,
     "cost_gated": false,
-    "rho": 0.198,
-    "perf": 12.0,
-    "cost": 6.0,
-    "total": 34.0,
+    "rho": 0.092,
+    "perf": 11.0,
+    "cost": 8.0,
+    "total": 35.0,
     "apps": {
+      "user": {
+        "rho": 23.217,
+        "pass_pct": 91.8,
+        "points": 4.0
+      },
       "product": {
-        "rho": 27.987,
-        "pass_pct": 99.9,
+        "rho": 23.217,
+        "pass_pct": 100.0,
         "points": 4.0
       },
       "stress": {
-        "rho": 4.515,
-        "pass_pct": 96.1,
-        "points": 4.0
-      },
-      "user": {
-        "rho": 27.987,
-        "pass_pct": 96.0,
-        "points": 4.0
+        "rho": 9.083,
+        "pass_pct": 86.5,
+        "points": 3.0
       }
     }
   },
@@ -117,24 +89,24 @@
     "path_ms": 14.5,
     "cores": 6.0,
     "cost_gated": false,
-    "rho": 0.264,
+    "rho": 0.092,
     "perf": 12.0,
     "cost": 6.0,
     "total": 34.0,
     "apps": {
+      "user": {
+        "rho": 23.217,
+        "pass_pct": 91.8,
+        "points": 4.0
+      },
       "product": {
-        "rho": 37.316,
-        "pass_pct": 99.9,
+        "rho": 23.217,
+        "pass_pct": 100.0,
         "points": 4.0
       },
       "stress": {
-        "rho": 2.258,
-        "pass_pct": 99.8,
-        "points": 4.0
-      },
-      "user": {
-        "rho": 37.316,
-        "pass_pct": 92.1,
+        "rho": 4.541,
+        "pass_pct": 95.9,
         "points": 4.0
       }
     }
@@ -145,53 +117,81 @@
     "path_ms": 14.5,
     "cores": 4.0,
     "cost_gated": false,
-    "rho": 0.395,
+    "rho": 0.138,
     "perf": 11.5,
     "cost": 6.0,
     "total": 33.5,
     "apps": {
+      "user": {
+        "rho": 34.825,
+        "pass_pct": 88.5,
+        "points": 3.5
+      },
       "product": {
-        "rho": 55.974,
+        "rho": 34.825,
         "pass_pct": 99.9,
         "points": 4.0
       },
       "stress": {
-        "rho": 1.505,
-        "pass_pct": 99.8,
+        "rho": 3.028,
+        "pass_pct": 99.7,
         "points": 4.0
-      },
-      "user": {
-        "rho": 55.974,
-        "pass_pct": 87.9,
-        "points": 3.5
       }
     }
   },
   {
-    "nodes": 6,
+    "nodes": 5,
     "mode": "iso",
     "path_ms": 14.5,
-    "cores": 10.0,
+    "cores": 8.0,
     "cost_gated": false,
-    "rho": 0.158,
-    "perf": 12.0,
-    "cost": 4.0,
-    "total": 32.0,
+    "rho": 0.069,
+    "perf": 11.0,
+    "cost": 6.0,
+    "total": 33.0,
     "apps": {
+      "user": {
+        "rho": 17.412,
+        "pass_pct": 94.4,
+        "points": 4.0
+      },
       "product": {
-        "rho": 22.389,
-        "pass_pct": 99.9,
+        "rho": 17.412,
+        "pass_pct": 100.0,
         "points": 4.0
       },
       "stress": {
-        "rho": 4.515,
-        "pass_pct": 96.1,
+        "rho": 9.083,
+        "pass_pct": 86.5,
+        "points": 3.0
+      }
+    }
+  },
+  {
+    "nodes": 4,
+    "mode": "shared",
+    "path_ms": 14.5,
+    "cores": 8.0,
+    "cost_gated": false,
+    "rho": 0.45,
+    "perf": 8.5,
+    "cost": 8.0,
+    "total": 32.5,
+    "apps": {
+      "user": {
+        "rho": 19.683,
+        "pass_pct": 92.9,
         "points": 4.0
       },
-      "user": {
-        "rho": 22.389,
-        "pass_pct": 98.6,
+      "product": {
+        "rho": 19.683,
+        "pass_pct": 100.0,
         "points": 4.0
+      },
+      "stress": {
+        "rho": 19.683,
+        "pass_pct": 39.5,
+        "points": 0.5
       }
     }
   },
@@ -201,24 +201,24 @@
     "path_ms": 14.5,
     "cores": 8.0,
     "cost_gated": false,
-    "rho": 0.198,
+    "rho": 0.069,
     "perf": 12.0,
     "cost": 4.0,
     "total": 32.0,
     "apps": {
+      "user": {
+        "rho": 17.412,
+        "pass_pct": 94.4,
+        "points": 4.0
+      },
       "product": {
-        "rho": 27.987,
-        "pass_pct": 99.9,
+        "rho": 17.412,
+        "pass_pct": 100.0,
         "points": 4.0
       },
       "stress": {
-        "rho": 2.258,
-        "pass_pct": 99.8,
-        "points": 4.0
-      },
-      "user": {
-        "rho": 27.987,
-        "pass_pct": 96.0,
+        "rho": 4.541,
+        "pass_pct": 95.9,
         "points": 4.0
       }
     }
@@ -229,109 +229,81 @@
     "path_ms": 14.5,
     "cores": 6.0,
     "cost_gated": false,
-    "rho": 0.264,
+    "rho": 0.092,
     "perf": 12.0,
     "cost": 4.0,
     "total": 32.0,
     "apps": {
+      "user": {
+        "rho": 23.217,
+        "pass_pct": 91.8,
+        "points": 4.0
+      },
       "product": {
-        "rho": 37.316,
-        "pass_pct": 99.9,
+        "rho": 23.217,
+        "pass_pct": 100.0,
         "points": 4.0
       },
       "stress": {
-        "rho": 1.505,
-        "pass_pct": 99.8,
-        "points": 4.0
-      },
-      "user": {
-        "rho": 37.316,
-        "pass_pct": 92.1,
+        "rho": 3.028,
+        "pass_pct": 99.7,
         "points": 4.0
       }
     }
   },
   {
-    "nodes": 7,
+    "nodes": 6,
     "mode": "iso",
-    "path_ms": 14.5,
-    "cores": 12.0,
-    "cost_gated": false,
-    "rho": 0.132,
-    "perf": 12.0,
-    "cost": 2.0,
-    "total": 30.0,
-    "apps": {
-      "product": {
-        "rho": 18.658,
-        "pass_pct": 99.9,
-        "points": 4.0
-      },
-      "stress": {
-        "rho": 4.515,
-        "pass_pct": 96.1,
-        "points": 4.0
-      },
-      "user": {
-        "rho": 18.658,
-        "pass_pct": 99.2,
-        "points": 4.0
-      }
-    }
-  },
-  {
-    "nodes": 7,
-    "mode": "iso2",
     "path_ms": 14.5,
     "cores": 10.0,
     "cost_gated": false,
-    "rho": 0.158,
-    "perf": 12.0,
-    "cost": 2.0,
-    "total": 30.0,
+    "rho": 0.055,
+    "perf": 11.0,
+    "cost": 4.0,
+    "total": 31.0,
     "apps": {
+      "user": {
+        "rho": 13.93,
+        "pass_pct": 97.3,
+        "points": 4.0
+      },
       "product": {
-        "rho": 22.389,
-        "pass_pct": 99.9,
+        "rho": 13.93,
+        "pass_pct": 100.0,
         "points": 4.0
       },
       "stress": {
-        "rho": 2.258,
-        "pass_pct": 99.8,
-        "points": 4.0
-      },
-      "user": {
-        "rho": 22.389,
-        "pass_pct": 98.6,
-        "points": 4.0
+        "rho": 9.083,
+        "pass_pct": 86.5,
+        "points": 3.0
       }
     }
   },
   {
-    "nodes": 7,
-    "mode": "iso3",
+    "nodes": 5,
+    "mode": "shared",
     "path_ms": 14.5,
-    "cores": 8.0,
+    "cores": 10.0,
     "cost_gated": false,
-    "rho": 0.198,
-    "perf": 12.0,
-    "cost": 2.0,
-    "total": 30.0,
+    "rho": 0.36,
+    "perf": 8.5,
+    "cost": 6.0,
+    "total": 30.5,
     "apps": {
+      "user": {
+        "rho": 15.746,
+        "pass_pct": 95.5,
+        "points": 4.0
+      },
       "product": {
-        "rho": 27.987,
-        "pass_pct": 99.9,
+        "rho": 15.746,
+        "pass_pct": 100.0,
         "points": 4.0
       },
       "stress": {
-        "rho": 1.505,
-        "pass_pct": 99.8,
-        "points": 4.0
-      },
-      "user": {
-        "rho": 27.987,
-        "pass_pct": 96.0,
-        "points": 4.0
+        "rho": 15.746,
+        "pass_pct": 43.1,
+        "points": 0.5
       }
     }
   },
@@ -341,165 +313,25 @@
     "path_ms": 14.5,
     "cores": 12.0,
     "cost_gated": false,
-    "rho": 0.258,
-    "perf": 8.5,
-    "cost": 4.0,
-    "total": 28.5,
-    "apps": {
-      "product": {
-        "rho": 19.41,
-        "pass_pct": 99.9,
-        "points": 4.0
-      },
-      "stress": {
-        "rho": 19.41,
-        "pass_pct": 41.0,
-        "points": 0.5
-      },
-      "user": {
-        "rho": 19.41,
-        "pass_pct": 99.2,
-        "points": 4.0
-      }
-    }
-  },
-  {
-    "nodes": 8,
-    "mode": "iso",
-    "path_ms": 14.5,
-    "cores": 14.0,
-    "cost_gated": false,
-    "rho": 0.113,
-    "perf": 12.0,
-    "cost": 0,
-    "total": 28.0,
-    "apps": {
-      "product": {
-        "rho": 15.992,
-        "pass_pct": 99.9,
-        "points": 4.0
-      },
-      "stress": {
-        "rho": 4.515,
-        "pass_pct": 96.1,
-        "points": 4.0
-      },
-      "user": {
-        "rho": 15.992,
-        "pass_pct": 99.9,
-        "points": 4.0
-      }
-    }
-  },
-  {
-    "nodes": 8,
-    "mode": "iso2",
-    "path_ms": 14.5,
-    "cores": 12.0,
-    "cost_gated": false,
-    "rho": 0.132,
-    "perf": 12.0,
-    "cost": 0,
-    "total": 28.0,
-    "apps": {
-      "product": {
-        "rho": 18.658,
-        "pass_pct": 99.9,
-        "points": 4.0
-      },
-      "stress": {
-        "rho": 2.258,
-        "pass_pct": 99.8,
-        "points": 4.0
-      },
-      "user": {
-        "rho": 18.658,
-        "pass_pct": 99.2,
-        "points": 4.0
-      }
-    }
-  },
-  {
-    "nodes": 8,
-    "mode": "iso3",
-    "path_ms": 14.5,
-    "cores": 10.0,
-    "cost_gated": false,
-    "rho": 0.158,
-    "perf": 12.0,
-    "cost": 0,
-    "total": 28.0,
-    "apps": {
-      "product": {
-        "rho": 22.389,
-        "pass_pct": 99.9,
-        "points": 4.0
-      },
-      "stress": {
-        "rho": 1.505,
-        "pass_pct": 99.8,
-        "points": 4.0
-      },
-      "user": {
-        "rho": 22.389,
-        "pass_pct": 98.6,
-        "points": 4.0
-      }
-    }
-  },
-  {
-    "nodes": 7,
-    "mode": "shared",
-    "path_ms": 14.5,
-    "cores": 14.0,
-    "cost_gated": false,
-    "rho": 0.221,
-    "perf": 8.5,
-    "cost": 2.0,
-    "total": 26.5,
-    "apps": {
-      "product": {
-        "rho": 16.637,
-        "pass_pct": 99.9,
-        "points": 4.0
-      },
-      "stress": {
-        "rho": 16.637,
-        "pass_pct": 42.9,
-        "points": 0.5
-      },
-      "user": {
-        "rho": 16.637,
-        "pass_pct": 99.8,
-        "points": 4.0
-      }
-    }
-  },
-  {
-    "nodes": 8,
-    "mode": "shared",
-    "path_ms": 14.5,
-    "cores": 16.0,
-    "cost_gated": false,
-    "rho": 0.194,
+    "rho": 0.3,
     "perf": 9.0,
-    "cost": 0,
-    "total": 25.0,
+    "cost": 4.0,
+    "total": 29.0,
     "apps": {
-      "product": {
-        "rho": 14.558,
-        "pass_pct": 99.9,
+      "user": {
+        "rho": 13.122,
+        "pass_pct": 98.2,
         "points": 4.0
       },
-      "stress": {
-        "rho": 14.558,
-        "pass_pct": 61.4,
-        "points": 1.0
-      },
-      "user": {
-        "rho": 14.558,
+      "product": {
+        "rho": 13.122,
         "pass_pct": 100.0,
         "points": 4.0
+      },
+      "stress": {
+        "rho": 13.122,
+        "pass_pct": 63.2,
+        "points": 1.0
       }
     }
   },
@@ -509,81 +341,25 @@
     "path_ms": 14.5,
     "cores": 6.0,
     "cost_gated": true,
-    "rho": 0.516,
+    "rho": 0.6,
     "perf": 8.0,
     "cost": 0.0,
     "total": 24.0,
     "apps": {
+      "user": {
+        "rho": 26.244,
+        "pass_pct": 90.7,
+        "points": 4.0
+      },
       "product": {
-        "rho": 38.821,
-        "pass_pct": 99.9,
+        "rho": 26.244,
+        "pass_pct": 100.0,
         "points": 4.0
       },
       "stress": {
-        "rho": 38.821,
-        "pass_pct": 0.0,
+        "rho": 26.244,
+        "pass_pct": 19.9,
         "points": 0
-      },
-      "user": {
-        "rho": 38.821,
-        "pass_pct": 91.8,
-        "points": 4.0
-      }
-    }
-  },
-  {
-    "nodes": 4,
-    "mode": "shared",
-    "path_ms": 14.5,
-    "cores": 8.0,
-    "cost_gated": true,
-    "rho": 0.387,
-    "perf": 8.0,
-    "cost": 0.0,
-    "total": 24.0,
-    "apps": {
-      "product": {
-        "rho": 29.116,
-        "pass_pct": 99.9,
-        "points": 4.0
-      },
-      "stress": {
-        "rho": 29.116,
-        "pass_pct": 17.2,
-        "points": 0
-      },
-      "user": {
-        "rho": 29.116,
-        "pass_pct": 95.9,
-        "points": 4.0
-      }
-    }
-  },
-  {
-    "nodes": 5,
-    "mode": "shared",
-    "path_ms": 14.5,
-    "cores": 10.0,
-    "cost_gated": true,
-    "rho": 0.31,
-    "perf": 8.0,
-    "cost": 0.0,
-    "total": 24.0,
-    "apps": {
-      "product": {
-        "rho": 23.292,
-        "pass_pct": 99.9,
-        "points": 4.0
-      },
-      "stress": {
-        "rho": 23.292,
-        "pass_pct": 20.1,
-        "points": 0
-      },
-      "user": {
-        "rho": 23.292,
-        "pass_pct": 98.2,
-        "points": 4.0
       }
     }
   },
@@ -593,25 +369,25 @@
     "path_ms": 14.5,
     "cores": 4.0,
     "cost_gated": true,
-    "rho": 0.774,
-    "perf": 7.5,
+    "rho": 0.901,
+    "perf": 7.0,
     "cost": 0.0,
-    "total": 23.5,
+    "total": 23.0,
     "apps": {
+      "user": {
+        "rho": 39.366,
+        "pass_pct": 87.4,
+        "points": 3.0
+      },
       "product": {
-        "rho": 58.231,
+        "rho": 39.366,
         "pass_pct": 99.9,
         "points": 4.0
       },
       "stress": {
-        "rho": 58.231,
+        "rho": 39.366,
         "pass_pct": 0.0,
         "points": 0
-      },
-      "user": {
-        "rho": 58.231,
-        "pass_pct": 87.5,
-        "points": 3.5
       }
     }
   }
