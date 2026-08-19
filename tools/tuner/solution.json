@@ -1,169 +1,701 @@
 [
   {
-    "nodes": 3,
-    "rho": 0.543,
-    "perf": 12.0,
-    "cost": 10.0,
-    "total": 38.0,
-    "apps": {
-      "user": {
-        "rho": 0.543,
-        "pass_pct": 96.7,
-        "points": 4.0
-      },
-      "product": {
-        "rho": 0.543,
-        "pass_pct": 100.0,
-        "points": 4.0
-      },
-      "stress": {
-        "rho": 0.222,
-        "pass_pct": 100.0,
-        "points": 4.0
-      }
-    }
-  },
-  {
     "nodes": 4,
-    "rho": 0.362,
-    "perf": 12.0,
+    "mode": "iso2",
+    "path_ms": 14.5,
+    "cores": 4.0,
+    "cost_gated": false,
+    "rho": 0.301,
+    "perf": 9.0,
     "cost": 8.0,
-    "total": 36.0,
+    "total": 33.0,
     "apps": {
       "user": {
-        "rho": 0.362,
-        "pass_pct": 99.2,
-        "points": 4.0
+        "rho": 80.5,
+        "pass_pct": 63.9,
+        "points": 1.0
       },
       "product": {
-        "rho": 0.362,
-        "pass_pct": 100.0,
+        "rho": 80.5,
+        "pass_pct": 98.7,
         "points": 4.0
       },
       "stress": {
-        "rho": 0.222,
-        "pass_pct": 100.0,
+        "rho": 2.188,
+        "pass_pct": 92.4,
         "points": 4.0
       }
     }
   },
   {
     "nodes": 5,
-    "rho": 0.272,
-    "perf": 12.0,
+    "mode": "iso2",
+    "path_ms": 14.5,
+    "cores": 6.0,
+    "cost_gated": false,
+    "rho": 0.201,
+    "perf": 10.5,
     "cost": 6.0,
-    "total": 34.0,
+    "total": 32.5,
     "apps": {
       "user": {
-        "rho": 0.272,
-        "pass_pct": 99.2,
-        "points": 4.0
+        "rho": 53.667,
+        "pass_pct": 82.6,
+        "points": 2.5
       },
       "product": {
-        "rho": 0.272,
-        "pass_pct": 100.0,
+        "rho": 53.667,
+        "pass_pct": 99.3,
         "points": 4.0
       },
       "stress": {
-        "rho": 0.222,
-        "pass_pct": 100.0,
+        "rho": 2.188,
+        "pass_pct": 92.4,
         "points": 4.0
       }
     }
   },
   {
-    "nodes": 2,
-    "rho": 1.086,
-    "perf": 4.0,
-    "cost": 12.0,
+    "nodes": 3,
+    "mode": "iso",
+    "path_ms": 14.5,
+    "cores": 4.0,
+    "cost_gated": false,
+    "rho": 0.301,
+    "perf": 6.0,
+    "cost": 10.0,
     "total": 32.0,
     "apps": {
       "user": {
-        "rho": 1.086,
-        "pass_pct": 0.0,
-        "points": 0
+        "rho": 80.5,
+        "pass_pct": 63.9,
+        "points": 1.0
       },
       "product": {
-        "rho": 1.086,
-        "pass_pct": 0.0,
-        "points": 0
+        "rho": 80.5,
+        "pass_pct": 98.7,
+        "points": 4.0
       },
       "stress": {
-        "rho": 0.222,
-        "pass_pct": 100.0,
+        "rho": 4.375,
+        "pass_pct": 63.5,
+        "points": 1.0
+      }
+    }
+  },
+  {
+    "nodes": 4,
+    "mode": "iso",
+    "path_ms": 14.5,
+    "cores": 6.0,
+    "cost_gated": false,
+    "rho": 0.201,
+    "perf": 7.5,
+    "cost": 8.0,
+    "total": 31.5,
+    "apps": {
+      "user": {
+        "rho": 53.667,
+        "pass_pct": 82.6,
+        "points": 2.5
+      },
+      "product": {
+        "rho": 53.667,
+        "pass_pct": 99.3,
+        "points": 4.0
+      },
+      "stress": {
+        "rho": 4.375,
+        "pass_pct": 63.5,
+        "points": 1.0
+      }
+    }
+  },
+  {
+    "nodes": 5,
+    "mode": "iso3",
+    "path_ms": 14.5,
+    "cores": 4.0,
+    "cost_gated": false,
+    "rho": 0.301,
+    "perf": 9.0,
+    "cost": 6.0,
+    "total": 31.0,
+    "apps": {
+      "user": {
+        "rho": 80.5,
+        "pass_pct": 63.9,
+        "points": 1.0
+      },
+      "product": {
+        "rho": 80.5,
+        "pass_pct": 98.7,
+        "points": 4.0
+      },
+      "stress": {
+        "rho": 1.458,
+        "pass_pct": 99.4,
         "points": 4.0
       }
     }
   },
   {
     "nodes": 6,
-    "rho": 0.217,
-    "perf": 12.0,
+    "mode": "iso2",
+    "path_ms": 14.5,
+    "cores": 8.0,
+    "cost_gated": false,
+    "rho": 0.15,
+    "perf": 11.0,
     "cost": 4.0,
-    "total": 32.0,
+    "total": 31.0,
     "apps": {
       "user": {
-        "rho": 0.217,
-        "pass_pct": 99.2,
-        "points": 4.0
+        "rho": 40.25,
+        "pass_pct": 85.2,
+        "points": 3.0
       },
       "product": {
-        "rho": 0.217,
-        "pass_pct": 100.0,
+        "rho": 40.25,
+        "pass_pct": 99.5,
         "points": 4.0
       },
       "stress": {
-        "rho": 0.222,
-        "pass_pct": 100.0,
+        "rho": 2.188,
+        "pass_pct": 92.4,
+        "points": 4.0
+      }
+    }
+  },
+  {
+    "nodes": 6,
+    "mode": "iso3",
+    "path_ms": 14.5,
+    "cores": 6.0,
+    "cost_gated": false,
+    "rho": 0.201,
+    "perf": 10.5,
+    "cost": 4.0,
+    "total": 30.5,
+    "apps": {
+      "user": {
+        "rho": 53.667,
+        "pass_pct": 82.6,
+        "points": 2.5
+      },
+      "product": {
+        "rho": 53.667,
+        "pass_pct": 99.3,
+        "points": 4.0
+      },
+      "stress": {
+        "rho": 1.458,
+        "pass_pct": 99.4,
+        "points": 4.0
+      }
+    }
+  },
+  {
+    "nodes": 5,
+    "mode": "iso",
+    "path_ms": 14.5,
+    "cores": 8.0,
+    "cost_gated": false,
+    "rho": 0.15,
+    "perf": 8.0,
+    "cost": 6.0,
+    "total": 30.0,
+    "apps": {
+      "user": {
+        "rho": 40.25,
+        "pass_pct": 85.2,
+        "points": 3.0
+      },
+      "product": {
+        "rho": 40.25,
+        "pass_pct": 99.5,
+        "points": 4.0
+      },
+      "stress": {
+        "rho": 4.375,
+        "pass_pct": 63.5,
+        "points": 1.0
+      }
+    }
+  },
+  {
+    "nodes": 7,
+    "mode": "iso2",
+    "path_ms": 14.5,
+    "cores": 10.0,
+    "cost_gated": false,
+    "rho": 0.12,
+    "perf": 11.0,
+    "cost": 2.0,
+    "total": 29.0,
+    "apps": {
+      "user": {
+        "rho": 32.2,
+        "pass_pct": 86.7,
+        "points": 3.0
+      },
+      "product": {
+        "rho": 32.2,
+        "pass_pct": 99.9,
+        "points": 4.0
+      },
+      "stress": {
+        "rho": 2.188,
+        "pass_pct": 92.4,
         "points": 4.0
       }
     }
   },
   {
     "nodes": 7,
-    "rho": 0.181,
-    "perf": 12.0,
+    "mode": "iso3",
+    "path_ms": 14.5,
+    "cores": 8.0,
+    "cost_gated": false,
+    "rho": 0.15,
+    "perf": 11.0,
     "cost": 2.0,
-    "total": 30.0,
+    "total": 29.0,
     "apps": {
       "user": {
-        "rho": 0.181,
-        "pass_pct": 100.0,
-        "points": 4.0
+        "rho": 40.25,
+        "pass_pct": 85.2,
+        "points": 3.0
       },
       "product": {
-        "rho": 0.181,
-        "pass_pct": 100.0,
+        "rho": 40.25,
+        "pass_pct": 99.5,
         "points": 4.0
       },
       "stress": {
-        "rho": 0.222,
-        "pass_pct": 100.0,
+        "rho": 1.458,
+        "pass_pct": 99.4,
+        "points": 4.0
+      }
+    }
+  },
+  {
+    "nodes": 6,
+    "mode": "iso",
+    "path_ms": 14.5,
+    "cores": 10.0,
+    "cost_gated": false,
+    "rho": 0.12,
+    "perf": 8.0,
+    "cost": 4.0,
+    "total": 28.0,
+    "apps": {
+      "user": {
+        "rho": 32.2,
+        "pass_pct": 86.7,
+        "points": 3.0
+      },
+      "product": {
+        "rho": 32.2,
+        "pass_pct": 99.9,
+        "points": 4.0
+      },
+      "stress": {
+        "rho": 4.375,
+        "pass_pct": 63.5,
+        "points": 1.0
+      }
+    }
+  },
+  {
+    "nodes": 8,
+    "mode": "iso2",
+    "path_ms": 14.5,
+    "cores": 12.0,
+    "cost_gated": false,
+    "rho": 0.1,
+    "perf": 11.5,
+    "cost": 0,
+    "total": 27.5,
+    "apps": {
+      "user": {
+        "rho": 26.833,
+        "pass_pct": 87.9,
+        "points": 3.5
+      },
+      "product": {
+        "rho": 26.833,
+        "pass_pct": 99.9,
+        "points": 4.0
+      },
+      "stress": {
+        "rho": 2.188,
+        "pass_pct": 92.4,
+        "points": 4.0
+      }
+    }
+  },
+  {
+    "nodes": 9,
+    "mode": "iso2",
+    "path_ms": 14.5,
+    "cores": 14.0,
+    "cost_gated": false,
+    "rho": 0.086,
+    "perf": 11.5,
+    "cost": 0,
+    "total": 27.5,
+    "apps": {
+      "user": {
+        "rho": 23.0,
+        "pass_pct": 89.1,
+        "points": 3.5
+      },
+      "product": {
+        "rho": 23.0,
+        "pass_pct": 99.9,
+        "points": 4.0
+      },
+      "stress": {
+        "rho": 2.188,
+        "pass_pct": 92.4,
+        "points": 4.0
+      }
+    }
+  },
+  {
+    "nodes": 9,
+    "mode": "iso3",
+    "path_ms": 14.5,
+    "cores": 12.0,
+    "cost_gated": false,
+    "rho": 0.1,
+    "perf": 11.5,
+    "cost": 0,
+    "total": 27.5,
+    "apps": {
+      "user": {
+        "rho": 26.833,
+        "pass_pct": 87.9,
+        "points": 3.5
+      },
+      "product": {
+        "rho": 26.833,
+        "pass_pct": 99.9,
+        "points": 4.0
+      },
+      "stress": {
+        "rho": 1.458,
+        "pass_pct": 99.4,
         "points": 4.0
       }
     }
   },
   {
     "nodes": 8,
-    "rho": 0.155,
-    "perf": 12.0,
+    "mode": "iso3",
+    "path_ms": 14.5,
+    "cores": 10.0,
+    "cost_gated": false,
+    "rho": 0.12,
+    "perf": 11.0,
     "cost": 0,
-    "total": 28.0,
+    "total": 27.0,
     "apps": {
       "user": {
-        "rho": 0.155,
-        "pass_pct": 100.0,
+        "rho": 32.2,
+        "pass_pct": 86.7,
+        "points": 3.0
+      },
+      "product": {
+        "rho": 32.2,
+        "pass_pct": 99.9,
+        "points": 4.0
+      },
+      "stress": {
+        "rho": 1.458,
+        "pass_pct": 99.4,
+        "points": 4.0
+      }
+    }
+  },
+  {
+    "nodes": 7,
+    "mode": "iso",
+    "path_ms": 14.5,
+    "cores": 12.0,
+    "cost_gated": false,
+    "rho": 0.1,
+    "perf": 8.5,
+    "cost": 2.0,
+    "total": 26.5,
+    "apps": {
+      "user": {
+        "rho": 26.833,
+        "pass_pct": 87.9,
+        "points": 3.5
+      },
+      "product": {
+        "rho": 26.833,
+        "pass_pct": 99.9,
+        "points": 4.0
+      },
+      "stress": {
+        "rho": 4.375,
+        "pass_pct": 63.5,
+        "points": 1.0
+      }
+    }
+  },
+  {
+    "nodes": 9,
+    "mode": "iso",
+    "path_ms": 14.5,
+    "cores": 16.0,
+    "cost_gated": false,
+    "rho": 0.075,
+    "perf": 9.0,
+    "cost": 0,
+    "total": 25.0,
+    "apps": {
+      "user": {
+        "rho": 20.125,
+        "pass_pct": 90.2,
         "points": 4.0
       },
       "product": {
-        "rho": 0.155,
+        "rho": 20.125,
         "pass_pct": 100.0,
         "points": 4.0
       },
       "stress": {
-        "rho": 0.222,
+        "rho": 4.375,
+        "pass_pct": 63.5,
+        "points": 1.0
+      }
+    }
+  },
+  {
+    "nodes": 8,
+    "mode": "iso",
+    "path_ms": 14.5,
+    "cores": 14.0,
+    "cost_gated": false,
+    "rho": 0.086,
+    "perf": 8.5,
+    "cost": 0,
+    "total": 24.5,
+    "apps": {
+      "user": {
+        "rho": 23.0,
+        "pass_pct": 89.1,
+        "points": 3.5
+      },
+      "product": {
+        "rho": 23.0,
+        "pass_pct": 99.9,
+        "points": 4.0
+      },
+      "stress": {
+        "rho": 4.375,
+        "pass_pct": 63.5,
+        "points": 1.0
+      }
+    }
+  },
+  {
+    "nodes": 9,
+    "mode": "shared",
+    "path_ms": 14.5,
+    "cores": 18.0,
+    "cost_gated": true,
+    "rho": 0.149,
+    "perf": 8.0,
+    "cost": 0.0,
+    "total": 24.0,
+    "apps": {
+      "user": {
+        "rho": 18.375,
+        "pass_pct": 90.9,
+        "points": 4.0
+      },
+      "product": {
+        "rho": 18.375,
         "pass_pct": 100.0,
         "points": 4.0
+      },
+      "stress": {
+        "rho": 18.375,
+        "pass_pct": 0.0,
+        "points": 0
+      }
+    }
+  },
+  {
+    "nodes": 6,
+    "mode": "shared",
+    "path_ms": 14.5,
+    "cores": 12.0,
+    "cost_gated": true,
+    "rho": 0.223,
+    "perf": 7.5,
+    "cost": 0.0,
+    "total": 23.5,
+    "apps": {
+      "user": {
+        "rho": 27.562,
+        "pass_pct": 87.9,
+        "points": 3.5
+      },
+      "product": {
+        "rho": 27.562,
+        "pass_pct": 99.9,
+        "points": 4.0
+      },
+      "stress": {
+        "rho": 27.562,
+        "pass_pct": 0.0,
+        "points": 0
+      }
+    }
+  },
+  {
+    "nodes": 7,
+    "mode": "shared",
+    "path_ms": 14.5,
+    "cores": 14.0,
+    "cost_gated": true,
+    "rho": 0.191,
+    "perf": 7.5,
+    "cost": 0.0,
+    "total": 23.5,
+    "apps": {
+      "user": {
+        "rho": 23.625,
+        "pass_pct": 88.9,
+        "points": 3.5
+      },
+      "product": {
+        "rho": 23.625,
+        "pass_pct": 99.9,
+        "points": 4.0
+      },
+      "stress": {
+        "rho": 23.625,
+        "pass_pct": 0.0,
+        "points": 0
+      }
+    }
+  },
+  {
+    "nodes": 8,
+    "mode": "shared",
+    "path_ms": 14.5,
+    "cores": 16.0,
+    "cost_gated": true,
+    "rho": 0.167,
+    "perf": 7.5,
+    "cost": 0.0,
+    "total": 23.5,
+    "apps": {
+      "user": {
+        "rho": 20.672,
+        "pass_pct": 89.8,
+        "points": 3.5
+      },
+      "product": {
+        "rho": 20.672,
+        "pass_pct": 100.0,
+        "points": 4.0
+      },
+      "stress": {
+        "rho": 20.672,
+        "pass_pct": 0.0,
+        "points": 0
+      }
+    }
+  },
+  {
+    "nodes": 4,
+    "mode": "shared",
+    "path_ms": 14.5,
+    "cores": 8.0,
+    "cost_gated": true,
+    "rho": 0.334,
+    "perf": 7.0,
+    "cost": 0.0,
+    "total": 23.0,
+    "apps": {
+      "user": {
+        "rho": 41.344,
+        "pass_pct": 85.1,
+        "points": 3.0
+      },
+      "product": {
+        "rho": 41.344,
+        "pass_pct": 99.5,
+        "points": 4.0
+      },
+      "stress": {
+        "rho": 41.344,
+        "pass_pct": 0.0,
+        "points": 0
+      }
+    }
+  },
+  {
+    "nodes": 5,
+    "mode": "shared",
+    "path_ms": 14.5,
+    "cores": 10.0,
+    "cost_gated": true,
+    "rho": 0.267,
+    "perf": 7.0,
+    "cost": 0.0,
+    "total": 23.0,
+    "apps": {
+      "user": {
+        "rho": 33.075,
+        "pass_pct": 86.5,
+        "points": 3.0
+      },
+      "product": {
+        "rho": 33.075,
+        "pass_pct": 99.8,
+        "points": 4.0
+      },
+      "stress": {
+        "rho": 33.075,
+        "pass_pct": 0.0,
+        "points": 0
+      }
+    }
+  },
+  {
+    "nodes": 3,
+    "mode": "shared",
+    "path_ms": 14.5,
+    "cores": 6.0,
+    "cost_gated": true,
+    "rho": 0.446,
+    "perf": 6.0,
+    "cost": 0.0,
+    "total": 22.0,
+    "apps": {
+      "user": {
+        "rho": 55.125,
+        "pass_pct": 82.1,
+        "points": 2.0
+      },
+      "product": {
+        "rho": 55.125,
+        "pass_pct": 99.2,
+        "points": 4.0
+      },
+      "stress": {
+        "rho": 55.125,
+        "pass_pct": 0.0,
+        "points": 0
       }
     }
   }

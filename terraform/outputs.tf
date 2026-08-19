@@ -21,7 +21,7 @@ output "s3_bucket" {
 }
 
 output "ec2_instance_id" {
-  value = aws_instance.bastion.id
+  value = try(aws_instance.bastion[0].id, "")
 }
 
 output "waf_acl_arn" {

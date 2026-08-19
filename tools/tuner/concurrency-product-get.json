@@ -1,0 +1,49 @@
+{
+  "app": "product",
+  "verb": "get",
+  "vcpu_per_pod_node": 2,
+  "points": [
+    {
+      "concurrency": 1,
+      "p50_ms": 1.5,
+      "p90_ms": 2.1,
+      "rps": 117.9,
+      "failed": 0
+    },
+    {
+      "concurrency": 2,
+      "p50_ms": 1.8,
+      "p90_ms": 2.7,
+      "rps": 179.2,
+      "failed": 0
+    },
+    {
+      "concurrency": 4,
+      "p50_ms": 3.4,
+      "p90_ms": 7.8,
+      "rps": 196.7,
+      "failed": 0
+    },
+    {
+      "concurrency": 8,
+      "p50_ms": 9.8,
+      "p90_ms": 19.7,
+      "rps": 199.5,
+      "failed": 0
+    },
+    {
+      "concurrency": 16,
+      "p50_ms": 21.6,
+      "p90_ms": 48.5,
+      "rps": 198.8,
+      "failed": 0
+    },
+    {
+      "concurrency": 32,
+      "p50_ms": 55.8,
+      "p90_ms": 129.1,
+      "rps": 131.5,
+      "failed": 0
+    }
+  ]
+}

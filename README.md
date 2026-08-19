@@ -14,6 +14,50 @@
 
 ---
 
+## 🟢 점수 직결 5가지 (2026-08-19 실측, 33.0 → 40.0)
+
+측정 없이도 그냥 적용하면 되는 것들이다. 상세 근거는 `DESIGN.md` 부록 A 와
+`tools/tuner/VALIDATION.md` 에 있다.
+
+1. **설치가 끝나면 bastion 을 없앤다** — `terraform apply -var bastion_enabled=false`
+   비용 지표는 EKS 노드가 아니라 **계정의 running EC2 전체 수**다(채점 `collector.py`).
+   bastion 한 대가 **비용 2점**이고, t3.small 이라 "t3.medium 타입만" 규정도 어긴다.
+   EKS API 가 퍼블릭이라 이후 kubectl 은 로컬에서 된다. (실측 36.0 → 38.5)
+
+2. **`minDomains` 를 건다** — 없으면 Karpenter 가 노드를 아예 안 만든다.
+   스케줄 가능한 노드가 1대뿐이면 `topologySpread` 의 skew 가 항상 0 이라 파드가
+   Pending 되지 않고, Karpenter 는 Pending 을 봐야 움직인다.
+
+3. **`NodePool.spec.limits.cpu` 로 상한을 건다** — 없으면 HPA 가 늘리는 만큼 노드가
+   계속 붙는다 (**실측 9대**, 비용 0점).
+
+4. **노드를 줄일 때는 NodeClaim 을 직접 지운다** — Karpenter 는 늘리는 건 알아서 하지만
+   **줄이는 건 절대 알아서 안 한다.** `limits.cpu` 를 낮춰도 이미 뜬 노드는 그대로다.
+   공유 풀과 stress 풀 **둘 다** 해당한다. (`tools/tuner/apply.sh` 가 처리)
+
+5. **stress 의 `cpu.requests` 를 낮춘다** (`limits` 는 건드리지 않는다)
+   CFS 는 경합 시 CPU 를 `requests` 비율로 나눈다. 기본은 stress 600m : user 70m = 8.6:1.
+   100m 로 낮추면 user 가 +8.5%p 오르고 stress 는 −2.3%p 만 내려간다. (실측 38.5 → 40.0)
+   단, stress 가 90% 티어를 깨면 이득이 사라지므로 두 값을 같이 봐야 한다.
+
+### 그리고 조심할 것
+
+- **비용 점수에는 성능 게이트가 있다.** 세 앱 중 하나라도 성능 30% 미만이면 **비용 12점이 통째로 0.**
+  "노드를 줄여 비용을 번다"는 전략은 이 선을 넘는 순간 역효과다.
+  실측: stress 를 7rps 로 올렸더니 동거 구성에서 stress 26% → 40.0 이 **22.5** 로 떨어졌다.
+- **stress 전용 노드는 항상 옳지 않다.** stress 가 적으면 동거가 이득(전용 노드 1대 = 비용 2점),
+  많으면 격리가 이득이다. 경계는 stress 파드 1개가 **4~5 rps** 에서 포화한다는 점으로 잡는다.
+
+### 1시간 안에 끝내야 한다면
+
+`tools/tuner/RUNBOOK-1H.md` 를 따른다. 핵심은 `profile.sh`(앱당 5분)를 버리고
+`concurrency.sh`(앱당 1분)만 쓰는 것, 그리고 트래픽이 시작되면
+`tools/tuner/autotune.sh run` 을 백그라운드로 돌려두는 것이다.
+`autotune.sh` 는 ALB 지표로 트래픽을 읽으므로 채점 서버 접근이 필요 없다.
+
+
+---
+
 ## 1. `terraform apply` 전에 4개 파일을 대회용으로 교체
 
 | 교체할 파일 | 위치 |

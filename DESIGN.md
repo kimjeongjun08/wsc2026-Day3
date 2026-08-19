@@ -246,3 +246,153 @@ sequenceDiagram
 
 > 파일 참조: `tools/turn.py`, `tools/scaler.py`, `tools/prewarm.py`, `k8s/deploy.yaml`,
 > `k8s/karpenter.yaml`, `loadtest/injector.py`, `loadtest/collector.py`, `loadtest/score_csv.py`.
+
+---
+
+# 부록 A. 2026-08-19 실측으로 갱신된 부분
+
+이 세션에서 채점 서버로 15개 회차를 돌려 실측한 결과다. 위 본문과 **충돌하는 항목**은
+아래가 우선한다. 근거는 모두 실측이며 상세는 `tools/tuner/VALIDATION.md` 에 있다.
+
+## A-1. 비용 지표는 "EKS 노드 수"가 아니라 "계정 running EC2 전체 수"다
+
+채점 `collector.py` 의 `count_ec2` 는 `describe_instances` 를 **필터 없이** 센다.
+
+```python
+for page in paginator.paginate(Filters=[{"Name":"instance-state-name","Values":["running","pending"]}]):
+    for r in page["Reservations"]:
+        count += len(r["Instances"])
+```
+
+그래서 **설치용 bastion 도 1대로 잡힌다. 그 한 대가 비용 2점이다.**
+
+과제 스펙도 같은 방향이다 — "EC2 인스턴스는 **t3.medium 타입만**",
+"불필요한 리소스를 생성한 경우 감점 (e.g. **미사용 EC2**)". t3.small bastion 은 두 조항 모두에 걸린다.
+
+EKS API 가 퍼블릭이면 설치 후 kubectl 은 로컬에서 그대로 된다. 그래서 terraform 에
+`bastion_enabled` 를 두고, 설치가 끝나면 `terraform apply -var bastion_enabled=false` 로 없앤다.
+
+**실측: bastion 제거만으로 36.0 → 38.5.**
+
+## A-2. stress 전용 노드는 항상 옳지 않다 — 트래픽에 달렸다
+
+본문은 stress 를 전용 노드에 고정하는 전제였다. 실측은 다르다.
+
+| 트래픽 | 최적 배치 | 점수 |
+|---|---|---|
+| stress 1.25 rps (기본 x0.5) | **동거** | 40.0 (격리는 37.0) |
+| stress 7 rps | **전용 2대** | 32.0 (동거는 22.5) |
+
+전용 노드 1대는 비용 2점이다. stress 수요가 그 값어치를 못 하면 손해다.
+반대로 stress 가 포화하면 비용 게이트가 터져 12점이 통째로 날아간다.
+
+경계는 stress 앱의 처리 한계로 정한다 — **파드 1개(2코어)가 4~5 rps 에서 포화**한다
+(`concurrency.sh` 실측). 다른 앱의 20분의 1 수준이다.
+
+## A-3. 성능을 좌우하는 것은 노드 수가 아니라 "user/product 가 쓸 수 있는 코어 수"
+
+| 구성 | 공유 코어 | user 통과율 |
+|---|---|---|
+| 2노드 격리 | 2 | 63.8% |
+| 2노드 동거 | 4 (stress 와 공유) | 86.9% |
+| 3노드 격리 | 4 (전용) | 97.0% |
+| 5노드 격리 | 8 | 96.8% |
+
+지연의 대부분은 **줄 서는 시간**이다. 요청 하나의 CPU 는 13.6ms 인데 채점이 본 지연은 180ms 였다.
+동시성을 걸어 재현했다:
+
+```
+동시성  1 → user POST  20.1ms
+동시성 20 → user POST 104.2ms      (20 × 13.6ms ÷ 2코어 = 136ms 와 일치)
+```
+
+평균 CPU 이용률은 32% 로 한가해 보이는데, 순간 몰림이 대기를 만든다.
+그래서 평균 기반 모델(ρ, `1/(1-ρ)`)로는 이 지연을 못 만든다 — 예측이 전부 99.8% 로 나온다.
+
+**주의**: 단발 프로브는 큐를 안 만들어 항상 빠르게 나온다. 내부 프로브 15.6ms 를 믿고
+"지연은 네트워크 탓"이라 결론냈다가 ALB `TargetResponseTime`(160~180ms)에 반박당했다.
+반드시 동시성을 걸어 재야 한다.
+
+## A-4. stress 의 `cpu.requests` 가 성능 레버다
+
+리눅스 CFS 는 노드가 경합할 때 CPU 를 컨테이너의 `requests` 비율로 나눈다.
+기본값은 stress 600m : user 70m ≈ **8.6:1** 이라 동거 시 user 가 밀린다.
+
+같은 2노드 동거 구성에서 `requests` 만 바꾼 실측:
+
+| stress requests | user | stress | 합계 |
+|---|---|---|---|
+| 600m (기본) | 84.73% | 94.64% | 38.5 |
+| 200m | 89.29% | 93.78% | 39.5 |
+| **100m** | **93.27%** | **92.39%** | **40.0** |
+
+`requests` 는 상한이 아니다. 상한은 `limits` 이고 그건 건드리지 않는다(stress `limits.cpu=2` 유지).
+노드가 한가하면 stress 는 여전히 필요한 만큼 쓴다. 경합 순간의 배분만 달라진다.
+단, stress 가 90% 티어를 깨면 이득이 사라지므로 **두 값을 같이 보고** 조절해야 한다.
+
+## A-5. 노드 수 제어: `minDomains`(하한) + `limits.cpu`(상한) + NodeClaim 회수(축소)
+
+- Karpenter 는 **Pending 파드를 봐야** 노드를 만든다. 스케줄 가능한 노드가 1대뿐이면
+  `topologySpread` 의 skew 가 항상 0 이라 파드가 Pending 되지 않는다 → 노드가 안 늘어난다.
+  `minDomains: N` 이 도메인 N 개가 될 때까지 파드를 Pending 시켜 Karpenter 를 깨운다.
+- 상한(`NodePool.spec.limits.cpu`)이 없으면 HPA 가 늘리는 만큼 노드가 계속 붙는다 (**실측 9대**).
+- **축소는 자동으로 안 된다.** `limits.cpu` 를 낮춰도 이미 뜬 노드는 안 지워지고,
+  `topologySpread` 때문에 Karpenter 의 통합 시뮬레이션도 막힌다(몇 분을 기다려도 그대로).
+  초과분만큼 **NodeClaim 을 직접 회수**해야 한다. 공유 풀과 stress 풀 **둘 다** 해당한다.
+- `nodeTaintsPolicy: Honor` 로 stress 전용 노드를 도메인 계산에서 제외한다. 없으면 그 노드가
+  "영원히 0개인 도메인"이 되어 maxSkew 를 계속 위반하고 노드가 무한 증식한다.
+
+## A-6. 공유 노드는 최소 2대
+
+1대로 줄이면 두 가지가 깨진다.
+
+1. 고가용성(12점) — user/product 가 한 노드에만 있으면 그 노드가 죽을 때 전면 중단이다.
+2. 실측: 공유 1대(2코어) 구성에서 HPA 가 늘린 파드 6개가 자리를 못 찾아 **Pending** 됐다.
+
+## A-7. 운영 도구는 `tools/tuner/` 로 대체
+
+본문의 `scaler.py` 상시 스케일 루프 대신, 측정 기반 도구를 쓴다.
+
+| 도구 | 역할 |
+|---|---|
+| `autotune.sh` | **메인.** ALB 지표로 트래픽을 읽고 → 계산 → 적용. 채점 서버 접근이 필요 없다 |
+| `concurrency.sh` | 앱의 동시성-지연 곡선 실측 (앱당 약 1분) |
+| `solve.py` | 곡선 + 트래픽 → 최적 노드 수·stress 배치 (비용 게이트 반영) |
+| `apply.sh` | 구성 고정 (`minDomains` + `limits.cpu` + NodeClaim 회수) |
+| `tune_requests.sh` | stress CPU 지분 조정 |
+
+대회는 **인프라 구축에 1시간**만 준다. 그 안에 들어가는 절차는 `tools/tuner/RUNBOOK-1H.md` 에 있다.
+핵심은 `profile.sh`(앱당 5분)를 버리고 `concurrency.sh`(앱당 1분)만 쓰는 것이다.
+
+## A-8. 한계 — 과부하 붕괴 구간은 예측하지 못한다
+
+정상 구간에서는 정확하다 (트래픽을 어떻게 흔들어도 **예측 오차 0.5점**).
+그러나 시스템이 무너지는 구간은 못 맞춘다.
+
+앱을 2배 무겁게(`LOAD_MULT` 0.3→0.6) 했을 때 **예측 35.5 vs 실측 16.5**.
+모델에 **타임아웃이 없기** 때문이다. stress 응답이 12.5초까지 늘자 주입기가 실패 처리했고
+가용성이 54.96% 로 떨어졌는데, 모델은 "지연이 길어진다"까지만 계산한다.
+
+그래서 모델과 별개로 **증상 기반 방어**를 넣었다 (`autotune.sh` 의 `overload_nodes`):
+ALB `TargetResponseTime` 이 SLA 를 넘으면 계산을 기다리지 않고 노드를 늘린다.
+과부하 붕괴는 회복이 느려서, 예측보다 반응이 중요하다.
+
+## A-9. stress 에 CPU `limits` 를 걸면 손해다
+
+"stress 부하가 강할 때 limit 으로 조여 user 를 보호"는 자연스러운 발상이라 직접 재봤다.
+stress 7rps, 2노드 동거(노드 수 고정해 리밋 효과만 분리):
+
+| stress `limits.cpu` | user | product | stress | 가용성 |
+|---|---|---|---|---|
+| 없음 | 85.75 | 108.63 | 26.13 | 전부 100% |
+| 2 (기본) | 84.88 | 107.76 | 26.04 | 전부 100% |
+| **1** | 83.73 | 99.57 | **9.86** | **product 91.41 / stress 96.04** |
+
+- `limits.cpu: 2` 는 t3.medium(2 vCPU)에서 노드 크기와 같아 **사실상 무제한**이다("없음"과 동일 결과).
+- 조여도 **user 는 안 오른다** (84.88 → 83.73).
+- 대신 **가용성이 깨진다** — 리밋에 걸린 stress 가 느려지며 압박이 옆 앱으로 번져
+  product 가용성이 91.41% 까지 떨어졌다. 리밋 없을 때는 세 앱 모두 100% 였다.
+
+보호는 `requests` 로 한다 — 경합할 때만 비율대로 배분하고 스로틀링이 없다 (A-4 참조).
+그리고 비용 게이트(성능 30%) 때문에 stress 를 희생시키는 전략 자체가 막혀 있다.
+stress 부하가 크면 조이는 게 아니라 **CPU 를 더 줘야 한다**(전용 노드). 실측 22.5 vs 32.0.

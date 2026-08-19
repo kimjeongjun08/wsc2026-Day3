@@ -19,8 +19,10 @@ set -uo pipefail
 cd "$(dirname "$0")"; source ./lib.sh
 
 APP=${1:-user}
+VERB=${2:-post}            # post | get — 트래픽의 대부분이 GET 인 앱이 있어 따로 잰다
 N=${N:-800}
-OUT=${OUT:-profile-$APP.json}
+OUT=${OUT:-profile-$APP${VERB:+-$VERB}.json}
+[ "$VERB" = "post" ] && OUT=${OUT_POST:-profile-$APP.json}
 
 case "$APP" in
   user)    BODY='{"requestid":"r","uuid":"u","username":"__U__","email":"__U__@x.com"}' ;;
@@ -29,17 +31,39 @@ case "$APP" in
   *) echo "모르는 앱: $APP — case 에 요청 본문을 추가해라" >&2; exit 1 ;;
 esac
 
-echo "== $APP 프로파일 (파드 1개, 동시성 1, 샘플 $N)"
+case "$APP" in
+  user)    QKEY=email ;;
+  product) QKEY=id ;;
+  *)       QKEY=id ;;
+esac
+
+echo "== $APP($VERB) 프로파일 (파드 1개, 동시성 1, 샘플 $N)"
 
 # 프로브 파드 매니페스트를 로컬에서 만들어 base64 로 넘긴다 (이스케이프 회피)
 PROBE_SH=$(cat <<SEOF
+# GET 은 존재하는 행을 조회해야 실제 트래픽과 같은 경로를 탄다 → 먼저 한 건 만들어 둔다
+FIXED="proffixed-\$(date +%s%N)"
+if [ "$VERB" = "get" ]; then
+  curl -s -o /dev/null -X POST -H 'Content-Type: application/json' \
+       -d "\$(echo '$BODY' | sed "s/__U__/\$FIXED/g")" http://$APP-svc:8080/v1/$APP
+fi
 i=0
 while [ \$i -lt $N ]; do
   i=\$((i+1))
   U="prof-\$(date +%s%N)-\$i"
+  # ★user 는 email 로 조회한다 — 저장된 값은 "<이름>@x.com" 이라 그대로 넘기면 404 다.
+  #   404 는 빨라서 F·d 가 통째로 잘못 나온다.
+  if [ "$VERB" = "get" ]; then
+    if [ "$APP" = "user" ]; then U="\$FIXED@x.com"; else U="\$FIXED"; fi
+  fi
   B=\$(echo '$BODY' | sed "s/__U__/\$U/g")
-  curl -s -m 20 -o /dev/null -w '%{time_total}\n' -X POST \
-       -H 'Content-Type: application/json' -d "\$B" http://$APP-svc:8080/v1/$APP
+  if [ "$VERB" = "get" ]; then
+    curl -s -m 20 -o /dev/null -w '%{time_total}\n' \
+         "http://$APP-svc:8080/v1/$APP?$QKEY=\$U&requestid=r&uuid=u"
+  else
+    curl -s -m 20 -o /dev/null -w '%{time_total}\n' -X POST \
+         -H 'Content-Type: application/json' -d "\$B" http://$APP-svc:8080/v1/$APP
+  fi
 done
 SEOF
 )

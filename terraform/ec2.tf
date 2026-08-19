@@ -120,6 +120,13 @@ resource "aws_s3_object" "dump_sql" {
 }
 
 resource "aws_instance" "bastion" {
+  # ★설치 전용 인스턴스. 채점 시점에는 꺼야 한다.
+  #   · 과제 스펙: "EC2 인스턴스는 t3.medium 타입만" + "불필요한 리소스(미사용 EC2) 감점"
+  #   · 비용 지표는 계정의 running 인스턴스 "전체 수"를 센다 → bastion 1대 = 비용 2점 손해
+  #   EKS API 가 퍼블릭이라 설치가 끝나면 kubectl 은 로컬에서 그대로 된다.
+  #   설치 완료 후:  terraform apply -var bastion_enabled=false
+  count = var.bastion_enabled ? 1 : 0
+
   ami                         = data.aws_ssm_parameter.al2023.value
   instance_type               = "t3.small"
   subnet_id                   = aws_subnet.public[0].id
