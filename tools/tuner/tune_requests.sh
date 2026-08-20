@@ -12,7 +12,7 @@
 #   그래도 stress 가 밀릴 수 있으므로 회차에서 stress 통과율을 반드시 같이 본다.
 #   과제지 기준: stress SLO 1초, 하드 5초. 실측 p50 은 동거에서 320~390ms 라 여유가 있다.
 set -uo pipefail
-cd "$(dirname "$0")"; source ./lib.sh
+cd "$(dirname "$0")"; source ./common.sh
 REQ=${1:?사용법: tune_requests.sh <requests 예: 300m> [limits 예: 1 | none]}
 LIM=${2:-}
 

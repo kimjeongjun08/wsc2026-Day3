@@ -17,7 +17,7 @@
 #   minDomains 는 하한만 정한다. 상한이 없으면 HPA 가 파드를 늘리는 만큼
 #   Karpenter 가 노드를 계속 붙인다 (실측: x1.0 에서 9대 → 비용 0/12).
 set -uo pipefail
-cd "$(dirname "$0")"; source ./lib.sh
+cd "$(dirname "$0")"; source ./common.sh
 T=${1:?사용법: apply.sh <총노드수> [iso|shared] [상한노드수]}
 MODE=${2:-iso}
 # ★상한을 하한과 분리한다.

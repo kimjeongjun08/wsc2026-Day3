@@ -23,7 +23,7 @@
 #   ENDPOINT=http://xxx.cloudfront.net ./pretune.sh "2:shared 3:iso 3:shared 4:iso2"
 #   RPS=50 DUR=60 ./pretune.sh            # 후보 생략 시 기본 후보군
 set -uo pipefail
-cd "$(dirname "$0")"; source ./lib.sh
+cd "$(dirname "$0")"; source ./common.sh
 
 ENDPOINT=${ENDPOINT:-}
 if [ -z "$ENDPOINT" ]; then

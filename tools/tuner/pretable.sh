@@ -13,7 +13,7 @@
 #
 # ※ POST 는 DB 에 행을 만든다(과제지 경고). pretune.sh 의 POST_RATIO 기본 10% 를 지킨다.
 set -uo pipefail
-cd "$(dirname "$0")"; source ./lib.sh
+cd "$(dirname "$0")"; source ./common.sh
 
 LOADS=${1:-"30 60 120"}
 CANDS=${2:-"2:shared 3:shared 3:iso 4:iso2"}

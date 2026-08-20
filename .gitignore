@@ -12,6 +12,7 @@ terraform/.terraform.tfstate.lock.info
 
 # 튜너 로컬 설정·산출물 (접속 정보 포함 — 커밋 금지)
 tools/tuner/.env
+tools/tuner/practice/.env
 tools/tuner/.autotune-state
 tools/tuner/sweep-*.tsv
 tools/tuner/curves-*/
