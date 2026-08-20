@@ -195,7 +195,9 @@ once() {
   score=$(score_of "$out")
   [ -z "$nodes" ] && { echo "   솔버가 답을 못 냈다"; return 1; }
 
-  cur=$(cat "$STATE" 2>/dev/null || echo "")
+  # STATE 는 "<하한> <배치> <상한>" 3필드다. 앞 2필드만 비교해야 한다 —
+  # 통째로 비교하면 상한 때문에 절대 같아지지 않아 매번 재적용했다.
+  cur=$(awk '{print $1, $2}' "$STATE" 2>/dev/null || echo "")
   if [ "$cur" = "$nodes $mode" ]; then
     echo "   현재 구성과 동일 ($nodes/$mode) — 유지"
     return 0
@@ -206,6 +208,28 @@ once() {
     mt=$(mtime "$STATE"); age=$(( $(date +%s) - ${mt:-0} ))
     if [ "$age" -lt "$STRUCT_COOLDOWN" ]; then
       echo "   구조 변경 대기 (${age}초 전에 바꿨다, 최소 ${STRUCT_COOLDOWN}초)"
+      return 0
+    fi
+  fi
+  # ★모델만 믿고 비싸지는 쪽으로 가지 않는다.
+  #   solve.py 는 동거(shared) 모드에서 무거운 앱의 지연을 크게 과대평가한다.
+  #   합산 동시성을 그 앱의 곡선에 그대로 대입하기 때문인데, 요청 하나의 무게가
+  #   앱마다 150배까지 차이난다(stress 227ms vs product 1.5ms).
+  #   그래서 stress 1.2rps 인데도 통과율 0% 로 보고 shared 를 탈락시킨다.
+  #   실제로 이것 때문에 40점 구성(2 shared)이 38점 구성(3 iso)으로 바뀐 적이 있다.
+  #
+  #   여기까지 왔다는 건 위의 과부하 검사에서 SLA 위반이 없었다는 뜻이다.
+  #   증상이 없는데 노드를 늘리거나 user/product 의 코어를 뺏는 변경은 하지 않는다.
+  #   줄이는 방향은 그대로 따른다 — 모델이 과대평가 쪽으로 틀리므로 신뢰도가 높다.
+  local cur_n cur_m cur_shared new_shared
+  cur_n=$(awk '{print $1}' "$STATE" 2>/dev/null); cur_m=$(awk '{print $2}' "$STATE" 2>/dev/null)
+  shared_of() { case "$2" in shared) echo "$1";; iso) echo $(($1-1));; iso*) echo $(($1-${2#iso}));; *) echo "$1";; esac; }
+  if [ "${ALLOW_MODEL_UPSIZE:-0}" != 1 ] && [ -n "${cur_n:-}" ]; then
+    cur_shared=$(shared_of "$cur_n" "${cur_m:-shared}")
+    new_shared=$(shared_of "$nodes" "$mode")
+    if [ "$nodes" -gt "$cur_n" ] || [ "$new_shared" -lt "$cur_shared" ]; then
+      echo "   모델은 $nodes/$mode (예상 $score) 를 권하지만 SLA 위반이 없다 — 유지 ($cur_n/$cur_m)"
+      echo "      비싸지는 변경은 실측 증상이 있을 때만 한다 (풀려면 ALLOW_MODEL_UPSIZE=1)"
       return 0
     fi
   fi
