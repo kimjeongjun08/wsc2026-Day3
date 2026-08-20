@@ -17,7 +17,7 @@
 #   돌려주는 바람에 "동시성 1에서 1.5ms, 처리량 160rps" 같은 물리적으로 불가능한
 #   곡선이 나왔다. 실패 응답은 빠르므로 반드시 상태코드로 걸러야 한다.
 set -uo pipefail
-cd "$(dirname "$0")"; source ./lib.sh
+cd "$(dirname "$0")"; source ./common.sh
 
 APP=${1:-user}
 VERB=${2:-post}

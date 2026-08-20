@@ -120,7 +120,7 @@ curl -o /dev/null -w '%{http_code}\n' -X POST <주소>/v1/user \
 **Q. `GO.sh` 가 알려주는 점수는 채점 점수인가?**
 
 아니다. 채점 공식을 똑같이 써서 **자체 부하로 매긴 값**이다. 구성끼리 순위를 비교하는 용도다.
-실제 점수는 채점 회차를 돌려야 안다(`./verify.sh`, `.env` 필요).
+실제 점수는 채점 회차를 돌려야 안다(`practice/verify.sh`, 사내 채점 서버 전용).
 
 **Q. 트래픽이 갑자기 늘면?**
 
@@ -278,5 +278,12 @@ user 82rps, product 199rps 인데 stress 는 4~5rps 다.
 | `solve.py` | 최적 구성 계산 |
 | `apply.sh` | 구성 적용 |
 | `tune_requests.sh` | stress CPU 몫 조절 |
-| `verify.sh` | 채점 회차 실행 (`.env` 필요, 연습용) |
-| `scenario.sh` | 연습용 트래픽 모양 변경 |
+| `common.sh` | 클러스터/AWS 공통 헬퍼 |
+
+연습 전용 (`practice/`) — **대회에서는 안 쓴다. 사내 채점 서버가 있어야 돈다:**
+
+| 파일 | 역할 |
+|---|---|
+| `practice/verify.sh` | 채점 회차 실행 (`practice/.env` 필요) |
+| `practice/scenario.sh` | 연습용 트래픽 모양 변경 |
+| `practice/grader.sh` | 채점 서버 제어 함수 |

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # verify.sh <배수> [분] — 실제 채점 회차를 돌리고 점수를 출력한다.
 set -uo pipefail
-cd "$(dirname "$0")"; source ./lib.sh
+cd "$(dirname "$0")"; source ./grader.sh
 MULT=${1:-1}; MINS=${2:-6}
 
 meta_set injection_rate_multiplier "$MULT"
