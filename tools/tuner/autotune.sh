@@ -139,8 +139,14 @@ score_of() { sed -n 's/^최적:.*예상 \([0-9.]*\)\/40.*/\1/p' <<<"$1"; }
 #   실패 처리됐고(가용성 54.96%), 점수는 16.5 였다. 모델은 35.5 를 예측했다.
 # 그래서 모델과 별개로 ALB 실측 지연을 보고 직접 방어한다.
 # SLA 를 넘고 있으면 계산을 기다리지 않고 노드를 늘린다.
-overload_nodes() {   # SLA 초과 중이면 늘려야 할 노드 수를 출력, 아니면 빈 값
-    local lb lbdim tg name rt cur worst=0
+# 출력: "<위반앱들(쉼표)> <늘려야 할 노드 수>"  (위반 없으면 빈 값)
+#   ★어느 앱이 무너졌는지를 반드시 같이 돌려준다.
+#   예전엔 worst=1 로 뭉개고 개수만 돌려줬는데, 그러면 대응이 "노드 +1" 하나뿐이라
+#   stress 가 굶는 상황(동거 + 낮은 cpu.requests)에서는 노드를 아무리 늘려도 안 낫는다.
+#   늘린 노드에 user/product 가 같이 올라타 stress 의 CFS 지분이 그대로이기 때문이다.
+#   실측(공식 peak2, stress 7rps): 2대→4대로 늘려도 stress p95 30초 유지, 5xx 수백 건.
+overload_nodes() {
+    local lb lbdim tg name rt cur bad=''
     cur=$(awk '{print $1}' "$STATE" 2>/dev/null)
     [ -z "${cur:-}" ] && return 0
     lb=$(aws elbv2 describe-load-balancers --region "$REGION" --names "$ALB_NAME" \
@@ -160,10 +166,10 @@ overload_nodes() {   # SLA 초과 중이면 늘려야 할 노드 수를 출력, 
       local sla=0.2; [ "$name" = stress ] && sla=1.0
       if [ "$(python3 -c "print(1 if $rt > $sla else 0)")" = 1 ]; then
         echo "   [!] $name 응답 $(python3 -c "print(round($rt*1000))")ms > SLA $(python3 -c "print(int($sla*1000))")ms" >&2
-        worst=1
+        bad="$bad,$name"
       fi
     done
-    [ "$worst" = 1 ] && echo $((cur+1))
+    [ -n "$bad" ] && echo "${bad#,} $((cur+1))"
     return 0
 }
 
@@ -176,16 +182,65 @@ once() {
   if [ "$(python3 -c "import json;print(1 if sum(json.loads('$traffic').values())<1 else 0)")" = 1 ]; then
     echo "   트래픽이 아직 없다 — 대기"; return 0
   fi
-  # SLA 를 넘고 있으면 모델을 기다리지 않고 즉시 늘린다 (과부하 붕괴는 회복이 느리다)
-  local urgent
+  # SLA 를 넘고 있으면 모델을 기다리지 않고 즉시 대응한다 (과부하 붕괴는 회복이 느리다)
+  #
+  # ★대응은 "무엇이 무너졌나"에 따라 다르다. 싼 것부터 순서대로 올라간다.
+  #   1) stress 가 굶는다 → cpu.requests 를 올린다   (노드 0대, 비용 0점)
+  #   2) 그래도 안 되면   → stress 를 전용 노드로     (실측 규칙대로 iso/iso2)
+  #   3) user/product    → 노드 +1                    (기존 동작)
+  local urgent bad_apps urgent_n cur_n cur_m sr
   urgent=$(overload_nodes)
-  if [ -n "${urgent:-}" ] && [ "$urgent" -le "$MAX_NODES" ]; then
-    echo "   과부하 감지 → 노드 $urgent 대로 즉시 증설"
-    if [ "$apply" = "yes" ]; then
-      m=$(awk '{print $2}' "$STATE" 2>/dev/null)
-      ./apply.sh "$urgent" "${m:-shared}" "$((urgent+CAP_MARGIN))" | tail -2
-      echo "$urgent ${m:-shared} $((urgent+CAP_MARGIN))" > "$STATE"
+  if [ -n "${urgent:-}" ]; then
+    read -r bad_apps urgent_n <<<"$urgent"
+    cur_n=$(awk '{print $1}' "$STATE" 2>/dev/null); cur_m=$(awk '{print $2}' "$STATE" 2>/dev/null)
+    cur_m=${cur_m:-shared}
+    sr=$(TRJ="$traffic" python3 -c "import json,os;t=json.loads(os.environ['TRJ']);print(round(sum(v for k,v in t.items() if k.startswith('stress')),2))" 2>/dev/null)
+
+    # ── 1) stress 굶주림: 먼저 CFS 지분을 돌려준다 ──────────────────────────
+    #   동거 배치에서 stress requests 를 100m 로 낮추면 가벼운 트래픽에서는 이득이지만
+    #   (실측 x0.5: +1.5점), 경합이 생기면 가장 무거운 워크로드가 가장 작은 지분을
+    #   갖게 되어 그대로 고사한다. 노드를 늘리기 전에 이것부터 되돌린다 — 공짜다.
+    #   되돌리지는 않는다. 롤아웃은 가용성을 깎으므로 회차 중 왕복시키지 않는다.
+    if [ "$apply" = "yes" ] && [[ ",$bad_apps," == *,stress,* ]] && \
+       [ "$cur_m" = shared ] && [ ! -f .stress-req-bumped ]; then
+      echo "   과부하(stress) → 먼저 stress cpu.requests 를 ${STRESS_REQ_HI:-600m} 로 올린다 (노드 유지)"
+      ./tune_requests.sh "${STRESS_REQ_HI:-600m}" | tail -1
+      : > .stress-req-bumped
+      return 0
     fi
+
+    # ── 2) stress 가 여전히 무너진다: 전용 노드로 뺀다 ──────────────────────
+    #   stress 는 요청 하나가 200~340ms 라 파드 1개(2코어)가 6~7rps 에서 포화한다.
+    #   전용 노드 수는 pretune 이 쓰는 실측 규칙과 같은 기준으로 정한다.
+    if [ "$apply" = "yes" ] && [[ ",$bad_apps," == *,stress,* ]] && [ -n "${sr:-}" ]; then
+      local iso_want new_mode shared_n new_n
+      iso_want=$(SR="$sr" python3 -c "import os;s=float(os.environ['SR']);print(0 if s<2 else 1 if s<4 else 2 if s<9 else 3)")
+      case "$cur_m" in shared) local cur_iso=0;; iso) local cur_iso=1;; iso*) local cur_iso=${cur_m#iso};; *) local cur_iso=0;; esac
+      [ "$iso_want" -le "$cur_iso" ] && iso_want=$((cur_iso+1))
+      if [ "$iso_want" -ge 1 ]; then
+        new_mode=iso; [ "$iso_want" -gt 1 ] && new_mode="iso$iso_want"
+        shared_n=$((cur_n-cur_iso)); [ "$shared_n" -lt 2 ] && shared_n=2
+        new_n=$((shared_n+iso_want))
+        if [ "$new_n" -le "$MAX_NODES" ]; then
+          echo "   과부하(stress ${sr}rps) → 전용 노드로 전환: $cur_n/$cur_m → $new_n/$new_mode"
+          ./apply.sh "$new_n" "$new_mode" "$((new_n+CAP_MARGIN))" | tail -2
+          echo "$new_n $new_mode $((new_n+CAP_MARGIN))" > "$STATE"
+          return 0
+        fi
+        echo "   stress 전용 전환이 필요하지만 $new_n 대는 상한 $MAX_NODES 초과 — 노드 증설로 대체"
+      fi
+    fi
+
+    # ── 3) user/product 과부하 (또는 위 경로가 불가능): 노드 +1 ─────────────
+    if [ "$urgent_n" -le "$MAX_NODES" ]; then
+      echo "   과부하 감지($bad_apps) → 노드 $urgent_n 대로 즉시 증설"
+      if [ "$apply" = "yes" ]; then
+        ./apply.sh "$urgent_n" "$cur_m" "$((urgent_n+CAP_MARGIN))" | tail -2
+        echo "$urgent_n $cur_m $((urgent_n+CAP_MARGIN))" > "$STATE"
+      fi
+      return 0
+    fi
+    echo "   과부하($bad_apps)이지만 이미 상한 $MAX_NODES 대다 — 더 늘릴 수 없다"
     return 0
   fi
   recalibrate_curves || true
@@ -310,6 +365,9 @@ print(' '.join(bad))")
 
 # ── 준비 단계 ─────────────────────────────────────────────────────────────
 prepare() {
+  # 지난 회차에서 stress requests 를 올렸다는 표시는 여기서 지운다.
+  # 안 지우면 다음 회차가 "이미 올렸다"고 판단해 1단계를 건너뛴다.
+  rm -f .stress-req-bumped
   local traffic
   traffic=$(read_traffic) || true
   if [ -n "${traffic:-}" ] && \
