@@ -74,8 +74,23 @@ import json; print(json.dumps({'user_post':round(u*0.1,2),'user_get':round(u*0.9
   fi
   # ★후보는 기본 2개다. 후보 하나당 노드 재구성에 5~8분이 걸려서,
   #   대회의 1시간 예산에 4개는 안 들어간다(실측). 솔버 1·2위만 실제로 확인한다.
-  CANDS=$(python3 solve.py --traffic "$TRAFFIC" --min-nodes 2 --max-nodes 6 --top "${TOP:-2}" 2>/dev/null \
-          | awk '/^ *[0-9]+ +(shared|iso[0-9]*) /{print $1":"$2}' | awk '!seen[$0]++' | head -"${TOP:-2}")
+  # ★가장 싼 동거 구성은 모델 점수와 무관하게 반드시 시험한다.
+  #   solve.py 는 동거 모드에서 무거운 앱의 지연을 크게 과대평가한다(합산 동시성을
+  #   그 앱의 곡선에 대입하는데, 요청 무게가 앱마다 150배까지 차이난다).
+  #   그래서 stress 가 1rps 수준이어도 shared 를 통과율 0% 로 보고 후보에서 떨어뜨린다.
+  #   실제로 이것 때문에 40점 구성(2:shared)이 시험조차 안 되고 3:iso(38점)가 뽑혔다.
+  #   pretune 은 실측이므로, 모델이 못 미더운 쪽을 오히려 직접 재게 한다.
+  #
+  #   1순위는 stress 요청률로 정한다. 아래 경계는 채점기로 확인한 값이다:
+  #     stress 1.25rps -> 동거 40.0 / 전용 37.0
+  #     stress 7rps    -> 동거 22.5 / 전용 2대 32.0
+  #   공유 노드는 최소 2대를 남긴다(고가용성·스케줄 여유).
+  SR=$(TRJ="$TRAFFIC" python3 -c "import json,os;t=json.loads(os.environ['TRJ']);print(round(sum(v for k,v in t.items() if k.startswith('stress')),2))")
+  BASE_CAND=${BASE_CAND:-$(SR="$SR" python3 -c "import os;s=float(os.environ['SR']);print('2:shared' if s<2 else '3:iso' if s<4 else '4:iso2' if s<9 else '5:iso3')")}
+  echo "   (stress ${SR} rps -> 실측 규칙 1순위: $BASE_CAND)"
+  MODEL_CANDS=$(python3 solve.py --traffic "$TRAFFIC" --min-nodes 2 --max-nodes 6 --top 6 2>/dev/null \
+          | awk '/^ *[0-9]+ +(shared|iso[0-9]*) /{print $1":"$2}')
+  CANDS=$(printf '%s\n%s\n' "$BASE_CAND" "$MODEL_CANDS" | awk 'NF && !seen[$0]++' | head -"${TOP:-2}")
   CANDS=$(echo $CANDS | tr "\n" " ")
   [ -z "$CANDS" ] && CANDS="2:shared 3:shared 3:iso"
   echo "   (후보 자동 선정: $CANDS)"
