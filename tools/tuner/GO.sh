@@ -21,8 +21,27 @@ need() {
   command -v "$1" >/dev/null 2>&1 || { echo "!! $1 가 없다"; exit 1; }
 }
 
+# Windows 에서 클론하면 git 이 줄바꿈을 CRLF 로 바꿔놓는다(core.autocrlf 기본값).
+# 그 상태로 리눅스에서 돌리면 bash 가 \r 에 걸려 죽거나, 더 나쁘게는
+# 상태 파일 값이 "shared\r" 로 읽혀 조용히 틀린다. 발견하면 바로 고친다.
+fix_crlf() {
+  local f bad=""
+  for f in *.sh *.py practice/*.sh; do
+    [ -f "$f" ] || continue
+    grep -qU $'\r' "$f" 2>/dev/null && bad="$bad $f"
+  done
+  [ -z "$bad" ] && return 0
+  echo "!! CRLF 줄바꿈이 섞여 있다 (Windows 에서 클론한 흔적). 고친다:$bad"
+  for f in $bad; do tr -d '\r' < "$f" > "$f.lf" && mv "$f.lf" "$f"; done
+  chmod +x ./*.sh practice/*.sh 2>/dev/null
+  echo "   고쳤다. 다시 안 겪으려면:  git config --global core.autocrlf input"
+  echo "   그리고 다시 실행해라:  ./GO.sh $CMD"
+  exit 1
+}
+
 case "$CMD" in
 setup)
+  fix_crlf
   need kubectl; need aws; need python3
   echo "############################################################"
   echo "# 1/4  준비 — 앱 처리 한계 측정 + 초기 구성"
