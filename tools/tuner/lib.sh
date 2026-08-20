@@ -7,8 +7,10 @@ export AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-ap-northeast-2}
 _LIBDIR=${BASH_SOURCE[0]:-$0}; _LIBDIR=$(cd "$(dirname "$_LIBDIR")" && pwd)
 [ -f "$_LIBDIR/.env" ] && . "$_LIBDIR/.env"
 BASTION=${BASTION:-}
-GRADER=${GRADER:?채점 서버 주소를 환경변수 GRADER 로 넘겨라}
-GPASS=${GPASS:?채점 서버 비밀번호를 환경변수 GPASS 로 넘겨라}
+# 채점 서버 접속 정보는 verify.sh 에서만 쓴다. 없어도 튜닝 도구는 전부 돈다 —
+# 대회장에는 채점 서버 SSH 가 없으므로 여기서 필수로 걸면 GO.sh 가 통째로 죽는다.
+GRADER=${GRADER:-}
+GPASS=${GPASS:-}
 GUSER=${GUSER:-labuser104}
 GPY=/opt/cloudgame/engine-venv/bin/python
 GDATA=/opt/cloudgame/data
@@ -44,6 +46,10 @@ bx() {
 # 예전엔 stderr 를 버려서 "부하가 한 건도 안 들어온 회차"를 정상 회차로 착각했다.
 gx() {
   local i out rc=1
+  [ -n "$GRADER" ] && [ -n "$GPASS" ] || {
+    echo "GX_UNAVAILABLE: 채점 서버 접속 정보가 없다 (.env 에 GRADER/GPASS). 연습 환경 전용 기능이다." >&2
+    return 1
+  }
   for i in 1 2 3; do
     out=$(sshpass -p "$GPASS" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 \
           -o ServerAliveInterval=5 root@"$GRADER" "$@" 2>/tmp/gx.err); rc=$?
