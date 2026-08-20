@@ -3,6 +3,9 @@
 set -uo pipefail
 export AWS_PROFILE=${AWS_PROFILE:-lee}
 export AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-ap-northeast-2}
+# 숫자 포맷만 C 로 고정한다. 로케일에 따라 awk/printf 가 소수점을 쉼표로 찍으면
+# (예: de_DE) 파이썬 float 파싱이 깨진다. 문자 인코딩은 건드리지 않는다.
+export LC_NUMERIC=C
 BASTION=${BASTION:-}
 NS=${NS:-apdev}
 

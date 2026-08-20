@@ -16,7 +16,7 @@
 # 검증: 이 앱에는 LOAD_MULT 라는 작업량 조절 변수가 있어서, 그걸 꺼서 구한 F 와
 #       이 방법으로 구한 F 가 일치하는지 대조할 수 있다 (VERIFY=1 로 실행).
 set -uo pipefail
-cd "$(dirname "$0")"; source ./common.sh
+cd "$(dirname "$0")" || exit 1; source ./common.sh
 
 APP=${1:-user}
 VERB=${2:-post}            # post | get — 트래픽의 대부분이 GET 인 앱이 있어 따로 잰다
