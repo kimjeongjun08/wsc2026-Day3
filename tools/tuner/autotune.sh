@@ -202,7 +202,8 @@ once() {
   fi
   # 구조 변경은 롤아웃을 부른다. 최근에 바꿨으면 참는다.
   if [ -f "$STATE" ]; then
-    local age=$(( $(date +%s) - $(stat -f %m "$STATE" 2>/dev/null || stat -c %Y "$STATE") ))
+    local mt age
+    mt=$(mtime "$STATE"); age=$(( $(date +%s) - ${mt:-0} ))
     if [ "$age" -lt "$STRUCT_COOLDOWN" ]; then
       echo "   구조 변경 대기 (${age}초 전에 바꿨다, 최소 ${STRUCT_COOLDOWN}초)"
       return 0
@@ -273,7 +274,8 @@ print(' '.join(bad))")
 
   # 6) 최근에 구성을 바꿨다면 아직 흔들리는 중일 수 있다
   if [ -f "$STATE" ]; then
-    local age=$(( $(date +%s) - $(stat -f %m "$STATE" 2>/dev/null || stat -c %Y "$STATE") ))
+    local mt age
+    mt=$(mtime "$STATE"); age=$(( $(date +%s) - ${mt:-0} ))
     if [ "$age" -lt 120 ]; then echo "   [X] 구성 변경 ${age}초 전 — 2분은 지켜봐라"; fail=1
     else echo "   [O] 마지막 구성 변경 ${age}초 전"; fi
   fi
@@ -293,8 +295,17 @@ prepare() {
   else
     for spec in "user post" "user get" "product get" "stress post"; do
       set -- $spec
-      [ -f "concurrency-$1-$2.json" ] && { echo "곡선 있음: $1-$2 (건너뜀)"; continue; }
+      # 저장소에 딸려온 곡선은 "내 연습 환경에서 잰 값"이다. 다른 계정·다른 대회장에서는
+      # 그대로 쓰면 안 된다. 여기서 반드시 다시 잰다. (REUSE_CURVES=1 이면 재사용)
+      if [ -f "concurrency-$1-$2.json" ]; then
+        if [ "${REUSE_CURVES:-0}" = 1 ]; then echo "곡선 재사용: $1-$2 (REUSE_CURVES=1)"; continue; fi
+        mv "concurrency-$1-$2.json" "seed-concurrency-$1-$2.json" 2>/dev/null
+      fi
       DUR=${DUR:-8} ./concurrency.sh "$1" "$2" | tail -8
+      if [ ! -f "concurrency-$1-$2.json" ] && [ -f "seed-concurrency-$1-$2.json" ]; then
+        echo "   !! $1-$2 측정 실패 — 저장소에 딸려온 곡선으로 대체한다(다른 환경에서 잰 값이라 정확도 낮음)"
+        cp "seed-concurrency-$1-$2.json" "concurrency-$1-$2.json"
+      fi
     done
   fi
 

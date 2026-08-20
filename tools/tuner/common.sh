@@ -30,3 +30,14 @@ bx() {
   aws ssm get-command-invocation --command-id "$cid" --instance-id "$BASTION" \
      --query 'StandardOutputContent' --output text 2>/dev/null
 }
+
+# 파일 수정시각(epoch). GNU stat 과 BSD(macOS) stat 은 옵션이 다르고,
+# 리눅스에서 `stat -f` 는 에러가 아니라 파일시스템 정보를 성공적으로 뱉는다.
+# 그래서 `stat -f ... || stat -c ...` 식 fallback 은 리눅스에서 동작하지 않는다.
+# 숫자가 나왔는지까지 확인해야 안전하다.
+mtime() {
+  local v
+  v=$(stat -c %Y "$1" 2>/dev/null); case "$v" in ''|*[!0-9]*) ;; *) echo "$v"; return 0;; esac
+  v=$(stat -f %m "$1" 2>/dev/null); case "$v" in ''|*[!0-9]*) ;; *) echo "$v"; return 0;; esac
+  echo 0; return 1
+}
