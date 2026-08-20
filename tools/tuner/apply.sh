@@ -130,6 +130,13 @@ for i in $(seq 1 40); do
   [ "${n:-0}" -ge "$T" ] && [ "${n:-0}" -le "$CAP" ] && break
   sleep 20
 done
+# ★상태 파일은 여기서 쓴다.
+#   예전엔 호출자(autotune/GO)가 각자 썼다. 그래서 apply.sh 를 직접 부르면
+#   클러스터는 바뀌는데 STATE 는 옛 값이 남았고, 다음 판단이 그 옛 값을 믿었다.
+#   실측 사고: STATE 가 "6 shared 8" 로 남은 채 stress 전용 전환이 걸려
+#   2+2=4 대여야 할 것이 6+2=8 대가 됐다. 진실은 한 곳에서만 만든다.
+echo "$T $MODE $CAP" > .autotune-state
+
 bx "kubectl get nodes -L role --no-headers | awk '{print \$1, \$6}'
 echo ---
 kubectl get pods -n $NS -o wide --no-headers | awk '{split(\$1,a,\"-\"); print a[1], \$7}' | sort | uniq -c"

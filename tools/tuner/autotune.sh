@@ -206,7 +206,7 @@ once() {
       echo "   과부하(stress) → 먼저 stress cpu.requests 를 ${STRESS_REQ_HI:-600m} 로 올린다 (노드 유지)"
       ./tune_requests.sh "${STRESS_REQ_HI:-600m}" | tail -1
       : > .stress-req-bumped
-      return 0
+      return 2
     fi
 
     # ── 2) stress 가 여전히 무너진다: 전용 노드로 뺀다 ──────────────────────
@@ -219,13 +219,19 @@ once() {
       [ "$iso_want" -le "$cur_iso" ] && iso_want=$((cur_iso+1))
       if [ "$iso_want" -ge 1 ]; then
         new_mode=iso; [ "$iso_want" -gt 1 ] && new_mode="iso$iso_want"
-        shared_n=$((cur_n-cur_iso)); [ "$shared_n" -lt 2 ] && shared_n=2
+        # 공유 노드 수: shared 에서 처음 전환할 때는 실측 구성의 기준값 2 로 잡는다.
+        #   stress 가 전용 노드로 빠지면 공유 쪽 코어가 그만큼 놀아나므로 늘릴 이유가 없고,
+        #   측정된 좋은 구성(3:iso, 4:iso2)은 전부 "공유 2대 + stress N대" 형태다.
+        #   그래도 user/product 가 모자라면 3단계가 다시 늘린다.
+        #   이미 iso 인 상태에서의 승급은 현재 공유 수를 유지한다.
+        if [ "$cur_iso" = 0 ]; then shared_n=2; else shared_n=$((cur_n-cur_iso)); fi
+        [ "$shared_n" -lt 2 ] && shared_n=2
         new_n=$((shared_n+iso_want))
         if [ "$new_n" -le "$MAX_NODES" ]; then
           echo "   과부하(stress ${sr}rps) → 전용 노드로 전환: $cur_n/$cur_m → $new_n/$new_mode"
           ./apply.sh "$new_n" "$new_mode" "$((new_n+CAP_MARGIN))" | tail -2
           echo "$new_n $new_mode $((new_n+CAP_MARGIN))" > "$STATE"
-          return 0
+          return 2
         fi
         echo "   stress 전용 전환이 필요하지만 $new_n 대는 상한 $MAX_NODES 초과 — 노드 증설로 대체"
       fi
@@ -238,7 +244,7 @@ once() {
         ./apply.sh "$urgent_n" "$cur_m" "$((urgent_n+CAP_MARGIN))" | tail -2
         echo "$urgent_n $cur_m $((urgent_n+CAP_MARGIN))" > "$STATE"
       fi
-      return 0
+      return 2
     fi
     echo "   과부하($bad_apps)이지만 이미 상한 $MAX_NODES 대다 — 더 늘릴 수 없다"
     return 0
@@ -421,7 +427,16 @@ case "${1:-run}" in
   run)
     echo "운영 루프 시작 (${INTERVAL}초 주기, ${MIN_GAIN}점 이상 개선될 때만 변경)"
     while :; do
-      once yes
+      once yes; rc=$?
+      # ★과부하 대응 직후(rc=2)에는 안정화를 기다리지 않는다.
+      #   사다리는 여러 단계를 밟아야 하는데, 노드가 뜨는 중이라 ready 가 실패하면
+      #   매 주기가 120초로 늘어져 다음 단계까지 몇 분이 더 걸린다.
+      #   실측: peak2 붕괴 후 1단계까지 8분, 2단계까지 11분 걸렸다.
+      #   무너지고 있는 중에 "흔들릴까 봐" 기다리는 건 손해가 더 크다.
+      if [ "$rc" = 2 ]; then
+        sleep "${URGENT_INTERVAL:-20}"
+        continue
+      fi
       # 구성을 바꿨으면 안정화될 때까지 지켜본 뒤 다음 주기로 간다.
       # 트래픽 중 파드/노드가 흔들리면 가용성(12점)이 깎이므로 조급하게 또 바꾸지 않는다.
       if ! ready >/dev/null 2>&1; then
