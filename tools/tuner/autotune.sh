@@ -213,18 +213,21 @@ once() {
     #   stress 는 요청 하나가 200~340ms 라 파드 1개(2코어)가 6~7rps 에서 포화한다.
     #   전용 노드 수는 pretune 이 쓰는 실측 규칙과 같은 기준으로 정한다.
     if [ "$apply" = "yes" ] && [[ ",$bad_apps," == *,stress,* ]] && [ -n "${sr:-}" ]; then
-      local iso_want new_mode shared_n new_n
-      iso_want=$(SR="$sr" python3 -c "import os;s=float(os.environ['SR']);print(0 if s<2 else 1 if s<4 else 2 if s<9 else 3)")
-      case "$cur_m" in shared) local cur_iso=0;; iso) local cur_iso=1;; iso*) local cur_iso=${cur_m#iso};; *) local cur_iso=0;; esac
-      [ "$iso_want" -le "$cur_iso" ] && iso_want=$((cur_iso+1))
+      local iso_want new_mode shared_n new_n cur_iso
+      case "$cur_m" in shared) cur_iso=0;; iso) cur_iso=1;; iso*) cur_iso=${cur_m#iso};; *) cur_iso=0;; esac
+      # ★한 칸씩만 올린다. rps 표로 목표를 단번에 잡지 않는다.
+      #   표(2~4rps→iso, 4~9→iso2)는 x0.5 맥락에서 나온 것인데, full peak2 에 그대로
+      #   적용했더니 전용 2대가 과잉이었다.
+      #   실측(peak2, stress 7rps): 전용 노드 CPU 26% 로 놀았고, 같은 시각 공유 노드는
+      #   93~100% 로 막혀 user p95 가 노드를 6대까지 늘려도 750ms 에서 안 내려갔다.
+      #   전용 1대면 충분했고 나머지 1대는 공유로 갔어야 했다.
+      #   증상이 남으면 다음 주기에 또 한 칸 올라가므로 결국 필요한 만큼에서 멈춘다.
+      iso_want=$((cur_iso+1))
       if [ "$iso_want" -ge 1 ]; then
         new_mode=iso; [ "$iso_want" -gt 1 ] && new_mode="iso$iso_want"
-        # 공유 노드 수: shared 에서 처음 전환할 때는 실측 구성의 기준값 2 로 잡는다.
-        #   stress 가 전용 노드로 빠지면 공유 쪽 코어가 그만큼 놀아나므로 늘릴 이유가 없고,
-        #   측정된 좋은 구성(3:iso, 4:iso2)은 전부 "공유 2대 + stress N대" 형태다.
-        #   그래도 user/product 가 모자라면 3단계가 다시 늘린다.
-        #   이미 iso 인 상태에서의 승급은 현재 공유 수를 유지한다.
-        if [ "$cur_iso" = 0 ]; then shared_n=2; else shared_n=$((cur_n-cur_iso)); fi
+        # 공유 노드 수는 건드리지 않는다. stress 를 빼내는 것이지 user/product 의
+        # 코어를 뺏는 게 아니다. 공유가 모자라면 3단계가 늘린다.
+        shared_n=$((cur_n-cur_iso))
         [ "$shared_n" -lt 2 ] && shared_n=2
         new_n=$((shared_n+iso_want))
         if [ "$new_n" -le "$MAX_NODES" ]; then

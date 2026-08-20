@@ -43,13 +43,14 @@ echo "== 과부하 사다리 분기"
 rm -f .stress-req-bumped
 case_is "1단계 stress 굶주림 → requests 상향"      "2 shared 4" "stress 3" '{"user":22,"product":45,"stress":7.0}' "REQ 600m"
 touch .stress-req-bumped
-case_is "2단계 stress 7rps → 4/iso2"               "2 shared 4" "stress 3" '{"user":22,"product":45,"stress":7.0}' "APPLY nodes=4 mode=iso2"
+case_is "2단계 stress 7rps → 한 칸만: 3/iso"       "2 shared 4" "stress 3" '{"user":22,"product":45,"stress":7.0}' "APPLY nodes=3 mode=iso"
 case_is "2단계 stress 2.5rps → 3/iso"              "2 shared 4" "stress 3" '{"user":22,"product":45,"stress":2.5}' "APPLY nodes=3 mode=iso"
+case_is "2단계 공유 4대는 유지한 채 전용만 +1"     "4 shared 6" "stress 5" '{"user":66,"product":90,"stress":7.0}' "APPLY nodes=5 mode=iso"
 case_is "2단계 iso 에서 iso2 로 승급"               "3 iso 5"   "stress 4" '{"user":22,"product":45,"stress":7.0}' "APPLY nodes=4 mode=iso2"
 case_is "3단계 user 과부하 → 노드+1, 배치 유지"     "2 shared 4" "user 3"   '{"user":66,"product":45,"stress":0.5}' "APPLY nodes=3 mode=shared"
-# 회귀: STATE 가 드리프트해 있어도 전용 전환은 실측 구성(공유 2대)으로 수렴해야 한다.
-#   실측 사고 — STATE 가 "6 shared 8" 로 남은 채 전환이 걸려 8대가 됐다.
-case_is "드리프트한 STATE(6 shared) → 8대가 아니라 4/iso2" "6 shared 8" "stress 7" '{"user":22,"product":45,"stress":7.0}' "APPLY nodes=4 mode=iso2"
+# STATE 는 이제 apply.sh 가 쓰므로 클러스터와 어긋나지 않는다.
+#   공유 6대가 있다는 건 user/product 가 그만큼 필요했다는 뜻이니 유지한다.
+case_is "STATE 6 shared → 공유 유지하고 전용 +1"   "6 shared 8" "stress 7" '{"user":22,"product":45,"stress":7.0}' "APPLY nodes=7 mode=iso"
 case_is "상한 도달 시 더 늘리지 않는다"             "8 shared 10" "user 9"  '{"user":66,"product":45,"stress":0.5}' "더 늘릴 수 없다"
 
 echo
