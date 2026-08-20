@@ -39,10 +39,44 @@ fix_crlf() {
   exit 1
 }
 
+# 시작하기 전에 "정말 붙어 있나"를 5초 안에 확인한다.
+# 예전엔 죽은 클러스터를 가리켜도 몇 분씩 조용히 돌았다 — 대회에서 그러면 끝이다.
+preflight() {
+  local ok=1
+  echo "== 사전 점검"
+
+  if ! kubectl --request-timeout=10s get --raw /version >/dev/null 2>&1; then
+    echo "   [X] 클러스터에 못 붙는다"
+    echo "       aws eks update-kubeconfig --region ap-northeast-2 --name apdev-cluster"
+    ok=0
+  else
+    echo "   [O] 클러스터 연결"
+  fi
+
+  if [ "$ok" = 1 ] && ! kubectl --request-timeout=10s get ns "${NS:-apdev}" >/dev/null 2>&1; then
+    echo "   [X] 네임스페이스 '${NS:-apdev}' 가 없다 — terraform apply 가 끝났나?"
+    ok=0
+  elif [ "$ok" = 1 ]; then
+    echo "   [O] 네임스페이스 ${NS:-apdev}"
+  fi
+
+  if ! aws sts get-caller-identity >/dev/null 2>&1; then
+    echo "   [X] AWS 자격증명이 안 먹는다 (AWS_PROFILE=${AWS_PROFILE:-미설정})"
+    echo "       export AWS_PROFILE=<본인 프로파일>"
+    ok=0
+  else
+    echo "   [O] AWS 자격증명 (${AWS_PROFILE:-default})"
+  fi
+
+  [ "$ok" = 1 ] || { echo; echo "!! 사전 점검 실패 — 위 문제를 먼저 고쳐라"; exit 1; }
+  echo
+}
+
 case "$CMD" in
 setup)
   fix_crlf
   need kubectl; need aws; need python3
+  preflight
   echo "############################################################"
   echo "# 1/4  준비 — 앱 처리 한계 측정 + 초기 구성"
   echo "############################################################"
