@@ -23,7 +23,7 @@
 #   ./autotune.sh once             # 한 번만 읽고 계산·적용
 #   ./autotune.sh show             # 지금 트래픽과 추천 구성만 출력 (적용 안 함)
 set -uo pipefail
-cd "$(dirname "$0")"; source ./common.sh
+cd "$(dirname "$0")" || exit 1; source ./common.sh
 
 REGION=${AWS_DEFAULT_REGION:-ap-northeast-2}
 ALB_NAME=${ALB_NAME:-apdev-alb}

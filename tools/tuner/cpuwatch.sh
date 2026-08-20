@@ -3,7 +3,7 @@
 #   목적: 격리 프로파일의 d 와 "실제 부하 중 d" 를 같은 단위로 비교하기 위함.
 #   출력: ts,app,cpu_sec_total,pods   (cpu_sec_total 은 앱의 모든 파드 합산 누적치)
 set -uo pipefail
-cd "$(dirname "$0")"; source ./common.sh
+cd "$(dirname "$0")" || exit 1; source ./common.sh
 INT=${1:-60}
 while :; do
   bx '

@@ -9,7 +9,7 @@
 #   scenario.sh show                     # 현재 설정 확인
 #   scenario.sh reset                    # 기본값 복구
 set -uo pipefail
-cd "$(dirname "$0")"; source ./grader.sh
+cd "$(dirname "$0")" || exit 1; source ./grader.sh
 
 CMD=${1:?사용법: scenario.sh rates|stress-length|show|reset [값]}
 
