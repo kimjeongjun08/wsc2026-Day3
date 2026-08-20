@@ -41,17 +41,27 @@ case_is() {  # <설명> <state> <위반> <트래픽> <기대문자열>
 
 echo "== 과부하 사다리 분기"
 rm -f .stress-req-bumped
-case_is "1단계 stress 굶주림 → requests 상향"      "2 shared 4" "stress 3" '{"user":22,"product":45,"stress":7.0}' "REQ 600m"
+case_is "stress 굶주림 → requests 상향 (노드 0대)"   "2 shared 4" "stress 3" '{"user":22,"product":45,"stress":7.0}' "REQ 600m"
 touch .stress-req-bumped
-case_is "2단계 stress 7rps → 한 칸만: 3/iso"       "2 shared 4" "stress 3" '{"user":22,"product":45,"stress":7.0}' "APPLY nodes=3 mode=iso"
-case_is "2단계 stress 2.5rps → 3/iso"              "2 shared 4" "stress 3" '{"user":22,"product":45,"stress":2.5}' "APPLY nodes=3 mode=iso"
-case_is "2단계 공유 4대는 유지한 채 전용만 +1"     "4 shared 6" "stress 5" '{"user":66,"product":90,"stress":7.0}' "APPLY nodes=5 mode=iso"
-case_is "2단계 iso 에서 iso2 로 승급"               "3 iso 5"   "stress 4" '{"user":22,"product":45,"stress":7.0}' "APPLY nodes=4 mode=iso2"
-case_is "3단계 user 과부하 → 노드+1, 배치 유지"     "2 shared 4" "user 3"   '{"user":66,"product":45,"stress":0.5}' "APPLY nodes=3 mode=shared"
-# STATE 는 이제 apply.sh 가 쓰므로 클러스터와 어긋나지 않는다.
-#   공유 6대가 있다는 건 user/product 가 그만큼 필요했다는 뜻이니 유지한다.
-case_is "STATE 6 shared → 공유 유지하고 전용 +1"   "6 shared 8" "stress 7" '{"user":22,"product":45,"stress":7.0}' "APPLY nodes=7 mode=iso"
-case_is "상한 도달 시 더 늘리지 않는다"             "8 shared 10" "user 9"  '{"user":66,"product":45,"stress":0.5}' "더 늘릴 수 없다"
+case_is "requests 올린 뒤 → 전용 한 칸 (공유 2 유지)" "2 shared 4" "stress 3" '{"user":22,"product":45,"stress":7.0}' "APPLY nodes=3 mode=iso"
+case_is "iso → iso2 승급"                            "3 iso 5"   "stress 4" '{"user":22,"product":45,"stress":7.0}' "APPLY nodes=4 mode=iso2"
+case_is "공유 4대는 유지한 채 전용만 +1"             "4 shared 6" "stress 5" '{"user":66,"product":90,"stress":7.0}' "APPLY nodes=5 mode=iso"
+case_is "user 과부하 → 공유 +1, 배치 유지"           "2 shared 4" "user 3"   '{"user":66,"product":45,"stress":0.5}' "APPLY nodes=3 mode=shared"
+case_is "product 과부하 → 공유 +1"                   "3 iso 5"   "product 4" '{"user":22,"product":90,"stress":0.5}' "APPLY nodes=4 mode=iso"
+
+echo "== ★ 동시 위반 — 한 주기에 둘 다 처리"
+# 실측 사고: stress 가 매 주기 위반해 user 차례가 영영 오지 않았고
+#            공유가 2대에 묶인 채 user perf 가 48.6% → 3.5% 로 무너졌다.
+case_is "stress+user 동시 → 공유 3 + 전용 1 = 4/iso"  "2 shared 4" "stress,user 3" '{"user":130,"product":35,"stress":7.0}' "APPLY nodes=4 mode=iso"
+case_is "stress+user+product 동시 → 공유 +1, 전용 +1" "3 iso 5"   "user,product,stress 4" '{"user":130,"product":90,"stress":7.0}' "APPLY nodes=5 mode=iso2"
+rm -f .stress-req-bumped
+case_is "stress+user, requests 아직 → requests 상향과"  "2 shared 4" "stress,user 3" '{"user":130,"product":35,"stress":7.0}' "REQ 600m"
+rm -f .stress-req-bumped
+case_is "  같은 주기에 공유 노드도 함께 늘어난다"      "2 shared 4" "stress,user 3" '{"user":130,"product":35,"stress":7.0}' "APPLY nodes=3 mode=shared"
+
+echo "== 한계"
+touch .stress-req-bumped
+case_is "상한 도달 시 더 늘리지 않는다"               "8 shared 10" "user 9"  '{"user":66,"product":45,"stress":0.5}' "더 늘릴 수 없다"
 
 echo
 echo "통과 $pass / 실패 $fail"

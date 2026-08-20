@@ -184,72 +184,65 @@ once() {
   fi
   # SLA 를 넘고 있으면 모델을 기다리지 않고 즉시 대응한다 (과부하 붕괴는 회복이 느리다)
   #
-  # ★대응은 "무엇이 무너졌나"에 따라 다르다. 싼 것부터 순서대로 올라간다.
-  #   1) stress 가 굶는다 → cpu.requests 를 올린다   (노드 0대, 비용 0점)
-  #   2) 그래도 안 되면   → stress 를 전용 노드로     (실측 규칙대로 iso/iso2)
-  #   3) user/product    → 노드 +1                    (기존 동작)
-  local urgent bad_apps urgent_n cur_n cur_m sr
+  # ★위반한 앱을 한 주기에 전부 처리한다.
+  #   예전엔 stress 를 먼저 보고 그 주기를 끝냈다. 그런데 peak2 에서는 stress 가
+  #   매 주기 위반하므로(SLO 1초 vs 실측 5~16초) user 차례가 영영 오지 않았고,
+  #   공유 노드가 2대에 묶인 채 user perf 가 48.6% → 3.5% 로 무너졌다.
+  #   stress 를 전용으로 빼는 것과 공유를 늘리는 것은 서로 배타적이지 않다.
+  local urgent bad_apps urgent_n cur_n cur_m cur_iso sr
+  local want_iso want_shared new_mode new_n did=0
   urgent=$(overload_nodes)
   if [ -n "${urgent:-}" ]; then
     read -r bad_apps urgent_n <<<"$urgent"
     cur_n=$(awk '{print $1}' "$STATE" 2>/dev/null); cur_m=$(awk '{print $2}' "$STATE" 2>/dev/null)
-    cur_m=${cur_m:-shared}
+    cur_n=${cur_n:-2}; cur_m=${cur_m:-shared}
+    case "$cur_m" in shared) cur_iso=0;; iso) cur_iso=1;; iso*) cur_iso=${cur_m#iso};; *) cur_iso=0;; esac
     sr=$(TRJ="$traffic" python3 -c "import json,os;t=json.loads(os.environ['TRJ']);print(round(sum(v for k,v in t.items() if k.startswith('stress')),2))" 2>/dev/null)
+    want_iso=$cur_iso
+    want_shared=$((cur_n-cur_iso)); [ "$want_shared" -lt 2 ] && want_shared=2
 
-    # ── 1) stress 굶주림: 먼저 CFS 지분을 돌려준다 ──────────────────────────
-    #   동거 배치에서 stress requests 를 100m 로 낮추면 가벼운 트래픽에서는 이득이지만
-    #   (실측 x0.5: +1.5점), 경합이 생기면 가장 무거운 워크로드가 가장 작은 지분을
-    #   갖게 되어 그대로 고사한다. 노드를 늘리기 전에 이것부터 되돌린다 — 공짜다.
-    #   되돌리지는 않는다. 롤아웃은 가용성을 깎으므로 회차 중 왕복시키지 않는다.
-    if [ "$apply" = "yes" ] && [[ ",$bad_apps," == *,stress,* ]] && \
-       [ "$cur_m" = shared ] && [ ! -f .stress-req-bumped ]; then
-      echo "   과부하(stress) → 먼저 stress cpu.requests 를 ${STRESS_REQ_HI:-600m} 로 올린다 (노드 유지)"
-      ./tune_requests.sh "${STRESS_REQ_HI:-600m}" | tail -1
-      : > .stress-req-bumped
-      return 2
-    fi
-
-    # ── 2) stress 가 여전히 무너진다: 전용 노드로 뺀다 ──────────────────────
-    #   stress 는 요청 하나가 200~340ms 라 파드 1개(2코어)가 6~7rps 에서 포화한다.
-    #   전용 노드 수는 pretune 이 쓰는 실측 규칙과 같은 기준으로 정한다.
-    if [ "$apply" = "yes" ] && [[ ",$bad_apps," == *,stress,* ]] && [ -n "${sr:-}" ]; then
-      local iso_want new_mode shared_n new_n cur_iso
-      case "$cur_m" in shared) cur_iso=0;; iso) cur_iso=1;; iso*) cur_iso=${cur_m#iso};; *) cur_iso=0;; esac
-      # ★한 칸씩만 올린다. rps 표로 목표를 단번에 잡지 않는다.
-      #   표(2~4rps→iso, 4~9→iso2)는 x0.5 맥락에서 나온 것인데, full peak2 에 그대로
-      #   적용했더니 전용 2대가 과잉이었다.
-      #   실측(peak2, stress 7rps): 전용 노드 CPU 26% 로 놀았고, 같은 시각 공유 노드는
-      #   93~100% 로 막혀 user p95 가 노드를 6대까지 늘려도 750ms 에서 안 내려갔다.
-      #   전용 1대면 충분했고 나머지 1대는 공유로 갔어야 했다.
-      #   증상이 남으면 다음 주기에 또 한 칸 올라가므로 결국 필요한 만큼에서 멈춘다.
-      iso_want=$((cur_iso+1))
-      if [ "$iso_want" -ge 1 ]; then
-        new_mode=iso; [ "$iso_want" -gt 1 ] && new_mode="iso$iso_want"
-        # 공유 노드 수는 건드리지 않는다. stress 를 빼내는 것이지 user/product 의
-        # 코어를 뺏는 게 아니다. 공유가 모자라면 3단계가 늘린다.
-        shared_n=$((cur_n-cur_iso))
-        [ "$shared_n" -lt 2 ] && shared_n=2
-        new_n=$((shared_n+iso_want))
-        if [ "$new_n" -le "$MAX_NODES" ]; then
-          echo "   과부하(stress ${sr}rps) → 전용 노드로 전환: $cur_n/$cur_m → $new_n/$new_mode"
-          ./apply.sh "$new_n" "$new_mode" "$((new_n+CAP_MARGIN))" | tail -2
-          echo "$new_n $new_mode $((new_n+CAP_MARGIN))" > "$STATE"
-          return 2
+    if [ "$apply" = "yes" ]; then
+      # ── stress ────────────────────────────────────────────────────────────
+      #   먼저 CFS 지분을 돌려준다 — 노드 0대짜리 대응이라 제일 싸다.
+      #   동거에서 requests 를 100m 로 낮추면 가벼운 트래픽에선 이득이지만(실측 +1.5점),
+      #   경합이 생기면 가장 무거운 워크로드가 가장 작은 지분을 갖게 되어 고사한다.
+      #   되돌리지는 않는다 — 롤아웃은 가용성을 깎으므로 회차 중 왕복시키지 않는다.
+      if [[ ",$bad_apps," == *,stress,* ]]; then
+        if [ "$cur_iso" = 0 ] && [ ! -f .stress-req-bumped ]; then
+          echo "   과부하(stress) → cpu.requests 를 ${STRESS_REQ_HI:-600m} 로 (노드 0대)"
+          ./tune_requests.sh "${STRESS_REQ_HI:-600m}" | tail -1
+          : > .stress-req-bumped; did=1
+        else
+          # 전용 노드는 한 칸씩만 올린다. rps 표로 목표를 단번에 잡지 않는다 —
+          # 실측(peak2 stress 7rps)에서 전용 2대는 CPU 26% 로 과잉이었다.
+          want_iso=$((cur_iso+1))
         fi
-        echo "   stress 전용 전환이 필요하지만 $new_n 대는 상한 $MAX_NODES 초과 — 노드 증설로 대체"
       fi
-    fi
 
-    # ── 3) user/product 과부하 (또는 위 경로가 불가능): 노드 +1 ─────────────
-    if [ "$urgent_n" -le "$MAX_NODES" ]; then
-      echo "   과부하 감지($bad_apps) → 노드 $urgent_n 대로 즉시 증설"
-      if [ "$apply" = "yes" ]; then
-        ./apply.sh "$urgent_n" "$cur_m" "$((urgent_n+CAP_MARGIN))" | tail -2
-        echo "$urgent_n $cur_m $((urgent_n+CAP_MARGIN))" > "$STATE"
+      # ── user/product ──────────────────────────────────────────────────────
+      #   공유 노드를 늘린다. stress 대응과 같은 주기에 함께 반영한다.
+      if [[ ",$bad_apps," == *,user,* ]] || [[ ",$bad_apps," == *,product,* ]]; then
+        want_shared=$((want_shared+1))
       fi
-      return 2
+
+      # ── 합쳐서 한 번만 적용한다 ───────────────────────────────────────────
+      new_n=$((want_shared+want_iso))
+      if [ "$new_n" != "$cur_n" ] || [ "$want_iso" != "$cur_iso" ]; then
+        if [ "$new_n" -le "$MAX_NODES" ]; then
+          new_mode=shared
+          [ "$want_iso" = 1 ] && new_mode=iso
+          [ "$want_iso" -gt 1 ] && new_mode="iso$want_iso"
+          echo "   과부하[$bad_apps]${sr:+ stress=${sr}rps} → $cur_n/$cur_m → $new_n/$new_mode (공유 $want_shared + 전용 $want_iso)"
+          ./apply.sh "$new_n" "$new_mode" "$((new_n+CAP_MARGIN))" | tail -2
+          did=1
+        else
+          echo "   과부하($bad_apps)이지만 $new_n 대는 상한 $MAX_NODES 초과 — 더 늘릴 수 없다"
+        fi
+      fi
+    else
+      echo "   과부하($bad_apps) 감지 — show 모드라 적용 안 함"
     fi
-    echo "   과부하($bad_apps)이지만 이미 상한 $MAX_NODES 대다 — 더 늘릴 수 없다"
+    [ "$did" = 1 ] && return 2
     return 0
   fi
   recalibrate_curves || true
