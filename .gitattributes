@@ -1,0 +1,21 @@
+# 줄바꿈은 항상 LF 로 고정한다.
+# Git for Windows 는 core.autocrlf=true 가 기본이라 체크아웃할 때 CRLF 로 바꾼다.
+# 그 파일을 리눅스에서 실행하면 bash 가 \r 에 걸려 죽는다:
+#   bash: ./GO.sh: /usr/bin/env bash^M: bad interpreter
+# 더 나쁜 경우는 조용히 틀리는 것이다 — 상태 파일 값이 "shared\r" 로 읽힌다.
+* text=auto eol=lf
+
+*.sh   text eol=lf
+*.py   text eol=lf
+*.json text eol=lf
+*.tf   text eol=lf
+*.md   text eol=lf
+*.yaml text eol=lf
+*.yml  text eol=lf
+
+# 바이너리는 건드리지 않는다
+*.png  binary
+*.pdf  binary
+*.hwp  binary
+*.tar.gz binary
+*.gz   binary

@@ -161,6 +161,27 @@ DUR=240 ./pretune.sh
 
 필요 시간 ≈ `150 ÷ (달성rps × 0.03)`. 달성 rps 는 결과표 오른쪽에 찍힌다.
 
+**Q. `bad interpreter: /usr/bin/env bash^M` 이라고 나온다.**
+
+Windows 에서 클론해서 줄바꿈이 CRLF 로 바뀐 것이다. Git for Windows 는
+`core.autocrlf=true` 가 기본이라 체크아웃할 때 LF 를 CRLF 로 바꾼다.
+
+`./GO.sh` 는 이걸 감지해서 자동으로 고친다. 다만 **`GO.sh` 자기 자신이 CRLF 면
+실행조차 안 되므로** 그때는 수동으로 한 번 돌려라:
+
+```bash
+for f in *.sh *.py practice/*.sh; do tr -d '\r' < "$f" > "$f.lf" && mv "$f.lf" "$f"; done
+chmod +x *.sh practice/*.sh
+```
+
+재발 방지(한 번만):
+
+```bash
+git config --global core.autocrlf input
+```
+
+저장소에 `.gitattributes` 로 LF 를 강제해뒀으니, 새로 클론하면 이 문제는 안 생긴다.
+
 **Q. 처음 상태로 되돌리려면?**
 
 ```bash
