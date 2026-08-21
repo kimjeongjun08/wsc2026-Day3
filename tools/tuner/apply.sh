@@ -34,7 +34,7 @@ VCPU=${VCPU:-2}
 #   stress 트래픽이 크면 전용 노드가 2대 이상 필요하다.
 if [ "$MODE" = "shared" ]; then
   ISO=0
-  DOMAINS=$T                       # 모든 노드가 user/product 의 도메인
+  DOMAINS=$T                       # 참고값(로그용). 실제 minDomains 는 아래에서 2 로 고정한다
   KARP=$((T-1)); STRESS_LIMIT=0    # MNG 1대 제외한 나머지가 Karpenter 몫
 else
   ISO=${MODE#iso}; ISO=${ISO:-1}
@@ -90,7 +90,11 @@ fi
 #   파드 20개를 얹으면 용량이 느는 게 아니라 큐와 문맥전환만 는다.
 #   실측: 세 앱 HPA 가 전부 20 에 붙어 파드 60개가 같은 코어를 나눠 썼다.
 #   노드당 3개면 t3.medium 2코어에 맞는다. HPA 패치는 롤아웃을 안 부른다(무료).
-HPA_MAX=$(( (DOMAINS>0 ? DOMAINS : 1) * ${HPA_PER_NODE:-3} ))
+# ★상한 노드 수 기준으로 잡는다.
+#   노드를 늘리는 방아쇠가 'Pending 파드'이므로, HPA 가 허용 노드를 다 채우고도
+#   조금 더 원해야 Karpenter 가 새 노드를 만든다. 반대로 무한정(20)이면
+#   4 vCPU 에 파드 20개가 얹혀 용량이 아니라 큐만 는다(실측: 세 앱 모두 20 에 붙음).
+HPA_MAX=$(( (CAP-ISO) * ${HPA_PER_NODE:-3} + 2 ))
 [ "$HPA_MAX" -lt 2 ] && HPA_MAX=2
 bx "for h in user-hpa product-hpa; do
   kubectl -n $NS patch hpa \$h -p '{\"spec\":{\"maxReplicas\":$HPA_MAX}}' >/dev/null 2>&1
@@ -101,14 +105,31 @@ bx "kubectl patch nodepool apdev-pool --type=merge -p '{\"spec\":{\"limits\":{\"
 kubectl patch nodepool apdev-stress-pool --type=merge -p '{\"spec\":{\"limits\":{\"cpu\":\"$STRESS_LIMIT\"}}}' >/dev/null
 echo '   apdev-pool='\$(kubectl get nodepool apdev-pool -o jsonpath='{.spec.limits.cpu}')' stress-pool='\$(kubectl get nodepool apdev-stress-pool -o jsonpath='{.spec.limits.cpu}')"
 
-if [ "$CUR_MD" = "$DOMAINS" ]; then
-  echo "-- minDomains 변경 없음($DOMAINS) — 롤아웃 생략"
+# ★minDomains 는 2 로 고정하고 회차 중에 절대 안 바꾼다.
+#
+#   왜 바꿨나 — 실측(2026-08-21 회차):
+#     증설할 때마다 minDomains 를 올렸고, 그건 파드 템플릿 변경이라 user/product 가
+#     롤링 재시작했다. peak2 부하 중 롤아웃이 돌면 ALB 등록/해제 사이에 요청이 흐른다.
+#     노드를 4번 늘리는 동안 5xx 가 1005, 1030, 168건 터졌다. 가용성은 12점짜리이고
+#     흘린 요청은 회차 끝까지 분모에 남는다. 증설 한 번이 가용성을 깎는 구조였다.
+#
+#   그럼 노드는 어떻게 늘리나:
+#     minDomains 2 는 '바닥 2대'만 보장한다(고가용성 최소선이자 비용 만점 지점).
+#     그 위로는 HPA 가 파드를 늘리면 갈 곳 없는 파드가 Pending 이 되고,
+#     Karpenter 가 그걸 보고 노드를 만든다. 우리는 NodePool 의 limits.cpu 로
+#     '어디까지 허용할지'만 정한다. limits 패치는 파드를 안 건드린다 = 롤아웃 없음.
+#     즉 바닥은 minDomains 가, 천장은 도구가, 그 사이는 실제 수요가 정한다.
+MIN_DOMAINS=${MIN_DOMAINS:-2}
+[ "$DOMAINS" -lt "$MIN_DOMAINS" ] && MIN_DOMAINS=$DOMAINS
+if [ "$CUR_MD" = "$MIN_DOMAINS" ]; then
+  echo "-- minDomains $MIN_DOMAINS 유지 — 롤아웃 없음"
 else
+  echo "-- minDomains $CUR_MD → $MIN_DOMAINS (이번 한 번만 롤아웃)"
 bx "for d in user product; do
   kubectl -n $NS patch deploy \$d --type=json \
-    -p='[{\"op\":\"replace\",\"path\":\"/spec/template/spec/topologySpreadConstraints/0/minDomains\",\"value\":$DOMAINS}]' >/dev/null \
+    -p='[{\"op\":\"replace\",\"path\":\"/spec/template/spec/topologySpreadConstraints/0/minDomains\",\"value\":$MIN_DOMAINS}]' >/dev/null \
     || kubectl -n $NS patch deploy \$d --type=json \
-       -p='[{\"op\":\"add\",\"path\":\"/spec/template/spec/topologySpreadConstraints/0/minDomains\",\"value\":$DOMAINS}]' >/dev/null
+       -p='[{\"op\":\"add\",\"path\":\"/spec/template/spec/topologySpreadConstraints/0/minDomains\",\"value\":$MIN_DOMAINS}]' >/dev/null
 done
 kubectl -n $NS rollout status deploy/user --timeout=300s | tail -1
 kubectl -n $NS rollout status deploy/product --timeout=300s | tail -1"

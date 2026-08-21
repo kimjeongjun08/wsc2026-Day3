@@ -64,6 +64,23 @@ run("누적 48% 면 게이트가 아니다 (대조군 user)",
     snap((9000, 0, BAD), (9000, 0, GOOD), (600, 0, SGOOD)), 4, {"escalation_pays": False},
     0, "이미 확인")
 
+print("== 2b. ★실측 사고 재현: 누적이 나빠도 '지금' 멀쩡하면 사지 않는다")
+# 2026-08-21 회차: peak2 에서 누적 user 가 31% 로 떨어진 뒤 현재 통과율이 99% 로
+# 회복됐는데도 게이트 규칙이 매 주기 발동해 노드를 4->5->7->8 로 밀어올렸다.
+# 게다가 거기서 return 하는 바람에 축소까지 막혀 18rps 계곡을 8대로 완주했다.
+PGOOD = {"user": {"pass": 100, "p50": .04, "p90": .08, "max": .15, "n": 15},
+         "product": {"pass": 100, "p50": .03, "p90": .07, "max": .12, "n": 15},
+         "stress": {"cpu_m": 300, "cpu_pct": 15}}
+run("누적 31% + 지금 99% → 안 산다", ledger(14, 4, {"user": 31, "product": 90, "stress": 90}),
+    snap((9000, 0, CALM), (9000, 0, CALM), (600, 0, SCALM)), 4, {}, -1, "축소", probe=PGOOD)
+PBAD2 = {"user": {"pass": 20, "p50": .9, "p90": 2.2, "max": 4.0, "n": 15},
+         "product": {"pass": 100, "p50": .04, "p90": .09, "max": .2, "n": 15},
+         "stress": {"cpu_m": 1900, "cpu_pct": 95}}
+m = {"escalation_pays": False}
+run("누적 31% + 지금도 나쁨 → '증설 무효' 판정을 무시하고 산다",
+    ledger(14, 4, {"user": 31, "product": 90, "stress": 90}),
+    snap((9000, 0, BAD), (9000, 0, CALM), (600, 0, SGOOD)), 4, m, +1, "게이트", probe=PBAD2)
+
 print("== 3. 증설이 효과 없다는 게 드러나면 그만둔다 (대조군의 함정)")
 led = ledger(63, 4, {"user": 48})
 m = {"last_upsize": {"nodes": 4, "minute": 60, "perf": {"user": 48.0, "product": 99.0, "stress": 72.0}}}

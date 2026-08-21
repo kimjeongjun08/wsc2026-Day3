@@ -39,7 +39,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import score
 
 E5_ALERT   = float(os.environ.get("E5_ALERT", 0.3))    # 5xx 비율 % — 이 위면 가용성 위험
-GATE_MARGIN= float(os.environ.get("GATE_MARGIN", 45))  # 통과율이 이 밑이면 게이트 방어
+GATE_DANGER = float(os.environ.get("GATE_DANGER", 40))  # 누적이 이 밑이면 게이트 위험
 # ★히스테리시스. 목표 tier 는 90% 다.
 #   90 에서 늘리고 90 에서 줄이면 경계에서 노드가 왔다갔다 하고, 그때마다 롤아웃이
 #   돌아 가용성이 깎인다. 늘리는 선(90)과 줄이는 선(96)을 벌려 놓는다.
@@ -109,6 +109,14 @@ def probe_view(probe):
     return bad, ok, ", ".join(shots)
 
 
+def below_now(perf, live, p_bad, probe):
+    """지금 목표(90%)를 못 내고 있는 앱.
+    실측이 있으면 실측이 정한다 — CloudWatch 는 몇 분 전 이야기다."""
+    if probe:
+        return sorted(set(p_bad))
+    return [a for a in live if perf[a] < TARGET_PERF]
+
+
 def advise(led, snap, nodes, memory, probe=None):
     """반환: (delta, 이유들). 회차 길이·남은 시간을 쓰지 않는다."""
     perf, avail, rps = estimate(snap)
@@ -143,16 +151,30 @@ def advise(led, snap, nodes, memory, probe=None):
         return +1, why
 
     # ── 2) 비용 게이트 방어 ───────────────────────────────────────────────
-    #   셋 중 하나라도 '누적' 통과율이 30% 밑이면 비용 12점이 통째로 0 이다.
-    #   여기만은 누적을 본다 — 채점되는 값이 누적이기 때문이다.
-    #   대조군 user 는 누적 48.6% 로 게이트에서 18%p 떨어져 있었다. 그런데도
-    #   예전 규칙은 매 주기 "SLA 위반"으로 읽고 노드를 샀다. 그게 손해였다.
+    #   누적 통과율이 30% 밑이면 비용 12점이 통째로 0 이 된다. 그건 막아야 한다.
+    #
+    #   ★그런데 '누적'만 보고 노드를 사면 절대 안 된다.
+    #     누적은 과거다. 지금 이미 잘 하고 있으면 노드를 더 산다고 누적이
+    #     더 빨리 오르지 않는다 — 이미 낼 수 있는 최선을 내고 있는 것이다.
+    #     실측 사고(2026-08-21 회차): peak2 에서 누적 user 가 31% 로 떨어진 뒤,
+    #     현재 통과율이 99% 로 완전히 회복됐는데도 이 규칙이 매 주기 발동해
+    #     노드를 4 → 5 → 7 → 8 대로 밀어올렸다. 게다가 여기서 return 하는 바람에
+    #     아래 축소 규칙까지 막혀서, 트래픽이 18rps 로 빠진 계곡 구간을 8대로
+    #     완주했다. 비용을 두 번 태운 셈이다.
+    #
+    #   그래서 조건은 둘 다여야 한다: 누적이 위험하고 + 지금도 못 내고 있고.
+    #   지금도 못 내고 있다면 그건 아래 3)이 처리한다. 이 규칙의 유일한 역할은
+    #   "이 회차엔 증설이 안 통한다"는 판정을 무시하고서라도 사게 하는 것이다.
     cum, _, _ = score.ledger_metrics(led)
-    danger = [a for a in live if (cum.get(a) if cum.get(a) is not None else 100.0) < 40.0]
-    if danger:
-        why.append(f"누적 통과율 "
+    failing = set(below_now(perf, live, p_bad, probe))
+    danger = [a for a in live
+              if (cum.get(a) if cum.get(a) is not None else 100.0) < GATE_DANGER
+              and a in failing]
+    if danger and nodes < int(os.environ.get("MAX_NODES", 8)):
+        why.append("누적 통과율 "
                    + ", ".join(f"{a}={cum[a]:.0f}%" for a in danger)
-                   + f" — 비용 게이트(30%) 방어 증설 [{shot}]")
+                   + f" 이고 지금도 못 내고 있다 — 비용 게이트(30%) 방어 증설 [{shot}]")
+        memory.pop("escalation_pays", None)
         return +1, why
 
     # ── 3) 목표 추격 ──────────────────────────────────────────────────────
@@ -160,13 +182,9 @@ def advise(led, snap, nodes, memory, probe=None):
     #   실측으로 드러났으면 그만둔다. 대조군이 정확히 그 함정에 빠졌다 —
     #   2→4→5→6 대로 올리는 동안 user 통과율은 48% 근처에 붙어 있었고
     #   비용만 12 → 8 로 깎였다. 노드 1대는 2점이고 성능은 앱당 최대 4점이다.
-    # ★"지금 나쁜가"는 실측이 정한다. CloudWatch 는 몇 분 전 이야기다.
-    #   실측이 나쁘다고 하면 CloudWatch 가 아직 좋아 보여도 대응한다.
-    #   실측이 멀쩡한데 CloudWatch 만 나쁘면, 이미 지나간 구간이므로 사지 않는다.
-    if probe:
-        below = sorted(set(p_bad))
-    else:
-        below = [a for a in live if perf[a] < TARGET_PERF]
+    # "지금 나쁜가"는 실측이 정한다(below_now). CloudWatch 가 나빠도 실측이
+    # 멀쩡하면 이미 지나간 구간이므로 사지 않는다.
+    below = below_now(perf, live, p_bad, probe)
     if below:
         # ★한 번에 한 대씩, 효과를 보고 나서 다음.
         #   노드는 뜨는 데 2~3분 걸린다. 그 사이에 또 사면 3~4대를 한꺼번에 지르고,
