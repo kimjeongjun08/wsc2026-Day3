@@ -51,6 +51,10 @@ else
   KARP=$((T-1-ISO)); STRESS_LIMIT=$((ISO*VCPU))
 fi
 [ "$DOMAINS" -lt 1 ] && { echo "공유 노드가 0 이하다 — 총노드수를 늘려라" >&2; exit 1; }
+# ★바닥 도메인 수. 회차 중에 안 바꾼다(바꾸면 롤아웃이 돈다).
+#   자리표시 파드 계산과 minDomains 패치가 같은 값을 봐야 하므로 여기서 한 번만 정한다.
+MIN_DOMAINS_FLOOR=${MIN_DOMAINS:-2}
+[ "$DOMAINS" -lt "$MIN_DOMAINS_FLOOR" ] && MIN_DOMAINS_FLOOR=$DOMAINS
 LIMIT=$(( (KARP + (CAP-T)) * VCPU ))
 echo "== 하한 $T 대 / 상한 $CAP 대 / stress=$MODE (전용 ${ISO}대)"
 echo "   도메인 $DOMAINS, Karpenter 공유 상한 ${LIMIT}vCPU, stress 상한 ${STRESS_LIMIT}vCPU"
@@ -140,9 +144,7 @@ echo '   apdev-pool='\$(kubectl get nodepool apdev-pool -o jsonpath='{.spec.limi
 #     Karpenter 가 그걸 보고 노드를 만든다. 우리는 NodePool 의 limits.cpu 로
 #     '어디까지 허용할지'만 정한다. limits 패치는 파드를 안 건드린다 = 롤아웃 없음.
 #     즉 바닥은 minDomains 가, 천장은 도구가, 그 사이는 실제 수요가 정한다.
-MIN_DOMAINS=${MIN_DOMAINS:-2}
-[ "$DOMAINS" -lt "$MIN_DOMAINS" ] && MIN_DOMAINS=$DOMAINS
-MIN_DOMAINS_FLOOR=$MIN_DOMAINS
+MIN_DOMAINS=$MIN_DOMAINS_FLOOR
 if [ "$CUR_MD" = "$MIN_DOMAINS" ]; then
   echo "-- minDomains $MIN_DOMAINS 유지 — 롤아웃 없음"
 else
