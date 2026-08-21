@@ -160,6 +160,23 @@ watch)
     [ -s autotune.log ] && mv autotune.log "autotune-$(date +%m%d-%H%M).log"
     echo "회차 원장 초기화 (이전 로그는 autotune-*.log 로 보관)"
   fi
+  # ★출발 지분을 여기서 보장한다.
+  #   CFS 는 경합할 때 cpu.requests 비율로 CPU 를 나눈다. 배포 기본값은
+  #   stress 600m : user 70m = 8.6 : 1 이라, 경합이 생기는 순간 user 가 밀린다.
+  #   실측(2026-08-21 practice, 52rps): 그 상태의 2대에서 user p50 132ms / p90 264ms 였고,
+  #   노드를 3대로 늘리자 p50 11ms 로 10배 빨라졌다. DB 는 내내 놀고 있었다
+  #   (읽기 0.4ms, 쓰기 1.2ms, CPU 5.8%) — 순수한 CPU 지분 문제였다.
+  #   setup 을 거치면 tune_requests.sh 가 낮춰주지만, apply.sh 만 직접 부르면
+  #   건너뛴다. 사람 손에 맡길 일이 아니다. watch 시작 때 스스로 확인한다.
+  CUR_REQ=$(kubectl -n "${NS:-apdev}" get deploy stress \
+            -o jsonpath='{.spec.template.spec.containers[0].resources.requests.cpu}' 2>/dev/null)
+  if [ "${CUR_REQ:-}" != "${START_STRESS_REQ:-100m}" ]; then
+    echo "stress cpu.requests ${CUR_REQ:-?} → ${START_STRESS_REQ:-100m} (경합 시 user 가 밀리지 않게)"
+    ./tune_requests.sh "${START_STRESS_REQ:-100m}" >/dev/null 2>&1
+  else
+    echo "stress cpu.requests ${CUR_REQ} — 그대로 둔다"
+  fi
+
   echo "감시·조정 루프를 켠다 (죽으면 자동 재기동). 로그: autotune.log"
   cat > .supervise.sh <<'SUP'
 #!/usr/bin/env bash

@@ -80,6 +80,21 @@ if [ -n "${CUR:-}" ]; then
   else ok "옛 잠금만 남아 있다: $1 (${AGE}초 전) — 새로 잡으면 된다"; fi
 else ok "잠금 없음"; fi
 
+echo "== 4c. CPU 지분이 한쪽으로 쏠려 있지 않나  ← 노드를 늘려도 안 낫던 원인"
+# CFS 는 경합할 때 cpu.requests 비율로 나눈다. 배포 기본값 stress 600m : user 70m 은
+# 8.6:1 이라 경합 순간 user 가 굶는다. 실측: 그 상태 2대에서 p50 132ms,
+# 3대로 늘리자 11ms. DB 는 내내 한가했다 — 순수 지분 문제다.
+SR=$(kubectl -n "$NS" get deploy stress -o jsonpath='{.spec.template.spec.containers[0].resources.requests.cpu}' 2>/dev/null)
+UR=$(kubectl -n "$NS" get deploy user -o jsonpath='{.spec.template.spec.containers[0].resources.requests.cpu}' 2>/dev/null)
+num() { case "$1" in *m) echo "${1%m}";; "") echo 0;; *) echo $(( ${1%.*} * 1000 ));; esac; }
+SN=$(num "${SR:-0}"); UN=$(num "${UR:-0}")
+if [ "${UN:-0}" -gt 0 ] && [ "$SN" -gt $((UN*4)) ]; then
+  bad "stress ${SR} : user ${UR} = $((SN/UN)):1 — 경합 시 user 가 굶는다"
+  echo "       고치기: ./tune_requests.sh 100m"
+else
+  ok "cpu.requests stress ${SR:-?} / user ${UR:-?}"
+fi
+
 echo "== 5. 노드 수와 상한이 도구 상태와 맞나"
 ST=$(cat "${STATE:-.autotune-state}" 2>/dev/null || echo "")
 T=$(awk '{print $1}' <<<"$ST"); M=$(awk '{print $2}' <<<"$ST"); C=$(awk '{print $3}' <<<"$ST")
