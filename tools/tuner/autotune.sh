@@ -238,6 +238,14 @@ prepare() {
      [ "$(python3 -c "import json;print(1 if sum(json.loads('$traffic').values())>2 else 0)" 2>/dev/null)" = 1 ]; then
     echo "!! 트래픽이 흐르는 중이다 ($traffic). 곡선 측정은 파드를 1개로 줄이므로 위험하다."
     echo "   측정을 건너뛰고 콜드 스타트 구성만 적용한다."
+  elif [ "${MEASURE_CURVES:-0}" != 1 ]; then
+    # ★기본은 안 잰다.
+    #   곡선은 solve.py 전용이고, solve.py 는 이제 운영 루프에서 안 쓴다
+    #   (판단은 alb_snapshot.sh + decide.py 가 한다). 남은 용도는 pretune 의
+    #   후보 하나 추천뿐인데, 측정에 대회 예산 6~10분이 든다. 값에 비해 비싸다.
+    #   굳이 재려면: MEASURE_CURVES=1 ./autotune.sh prepare
+    echo "== 동시성 곡선 측정은 건너뛴다 (MEASURE_CURVES=1 이면 잰다)"
+    echo "   판단은 ALB 실측 백분위로 한다 — 곡선이 없어도 도구는 완전히 동작한다."
   else
     for spec in "user post" "user get" "product get" "stress post"; do
       set -- $spec

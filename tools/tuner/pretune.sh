@@ -88,8 +88,20 @@ import json; print(json.dumps({'user_post':round(u*0.1,2),'user_get':round(u*0.9
   SR=$(TRJ="$TRAFFIC" python3 -c "import json,os;t=json.loads(os.environ['TRJ']);print(round(sum(v for k,v in t.items() if k.startswith('stress')),2))")
   BASE_CAND=${BASE_CAND:-$(SR="$SR" python3 -c "import os;s=float(os.environ['SR']);print('2:shared' if s<2 else '3:iso' if s<4 else '4:iso2' if s<9 else '5:iso3')")}
   echo "   (stress ${SR} rps -> 실측 규칙 1순위: $BASE_CAND)"
-  MODEL_CANDS=$(python3 solve.py --traffic "$TRAFFIC" --min-nodes 2 --max-nodes 6 --top 6 2>/dev/null \
-          | awk '/^ *[0-9]+ +(shared|iso[0-9]*) /{print $1":"$2}')
+  # 2순위 후보. 곡선이 있으면 모델에게 물어보고, 없으면 실측 규칙의 한 칸 위/아래를 쓴다.
+  #   ★곡선 측정은 파드를 1개로 줄여서 재므로 대회의 1시간 예산에서 6~10분을 먹는다.
+  #     그 값이 지금 하는 일은 '후보 하나 더 제안'뿐이다. 값에 비해 비싸다.
+  #     그래서 기본은 안 재고, 곡선 파일이 이미 있을 때만 모델을 부른다.
+  if ls concurrency-*.json >/dev/null 2>&1; then
+    MODEL_CANDS=$(python3 solve.py --traffic "$TRAFFIC" --min-nodes 2 --max-nodes 6 --top 6 2>/dev/null \
+            | awk '/^ *[0-9]+ +(shared|iso[0-9]*) /{print $1":"$2}')
+  else
+    MODEL_CANDS=$(BC="$BASE_CAND" python3 -c "
+import os
+n, m = os.environ['BC'].split(':')
+n = int(n)
+print('%d:shared' % n if m != 'shared' else '%d:shared' % (n + 1))")
+  fi
   CANDS=$(printf '%s\n%s\n' "$BASE_CAND" "$MODEL_CANDS" | awk 'NF && !seen[$0]++' | head -"${TOP:-2}")
   CANDS=$(echo $CANDS | tr "\n" " ")
   [ -z "$CANDS" ] && CANDS="2:shared 3:shared 3:iso"
