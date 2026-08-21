@@ -50,40 +50,70 @@ fi
 ALB=${TARGET#http://}; ALB=${ALB#https://}; ALB=${ALB%%/*}
 
 hex() { od -An -tx1 -N16 /dev/urandom | tr -d ' \n'; }
+SEED=${SEED_FILE:-.probe-seed}
 
-# ★URL 을 eval 로 만들지 않는다.
-#   `eval echo "/v1/user?a=1&b=2"` 는 & 를 백그라운드 연산자로 읽어서 URL 이 잘린다.
-#   실측: 그 상태로 15개를 쏘면 전부 5초 타임아웃 → "전 앱 0% 통과" 라는 거짓 신호가
-#   나오고, 한 주기에 2분을 잡아먹는다. 방아쇠가 거짓말하면 도구 전체가 무의미하다.
+# ★공식 트래픽과 같은 구성으로 쏜다.
+#   실측(2026-08-21 practice 회차): probe 는 7분 내내 "user 100% 통과"라고 했는데
+#   실제 채점은 70% 였다. 통과율 70% 인 모집단에서 15개를 뽑아 전부 통과할 확률은
+#   0.5% 다 — probe 가 다른 것을 재고 있었다는 뜻이다.
+#   probe 는 '없는 이메일 조회'(404, 제일 싼 경로)만 쐈고, 실제 user 트래픽은
+#   절반이 POST(INSERT)다. 방아쇠가 제일 싼 요청만 재면 영원히 안 울린다.
+#   공식 비율은 user_post : user_get = 1 : 1, product 는 거의 GET 이다.
 #
-# curl 한 번에 URL 여러 개를 넘긴다 — 연결을 재사용해서 15개가 1초 안에 끝난다.
-# ★-o /dev/null 은 URL 하나당 하나씩 필요하다.
-#   URL 을 여러 개 넘기면서 -o 를 한 번만 쓰면 첫 응답만 버려지고 나머지 본문이
-#   stdout 으로 쏟아진다(실측: 측정값 사이에 <html> 이 섞여 파싱이 죽었다).
-build_args() {  # $1=앱  → "-o /dev/null <url>" 를 N 번
-  local i
+#   POST 는 행을 만든다. 주기당 4건, 15분 회차면 60건이다 —
+#   채점 주입기가 같은 시간에 만드는 수만 건에 비하면 무시할 수 있다.
+build_args() {  # $1=앱  → "-o /dev/null <url>" 목록 (POST 는 별도 처리)
+  local i n=$1
   for i in $(seq 1 "$N"); do
     printf -- '-o\n/dev/null\n'
-    case "$1" in
-      user)    printf 'http://%s/v1/user?email=probe%s@k6.local&requestid=%s&uuid=%s\n' \
-                      "$ALB" "$(hex)" "$(hex)" "$(hex)" ;;
-      product) printf 'http://%s/v1/product?id=p-%s&requestid=%s&uuid=%s\n' \
-                      "$ALB" "$(hex)" "$(hex)" "$(hex)" ;;
+    case "$n" in
+      user)    printf 'http://%s/v1/user?email=%s&requestid=%s&uuid=%s\n' \
+                      "$ALB" "$(seed_email)" "$(hex)" "$(hex)" ;;
+      product) printf 'http://%s/v1/product?id=%s&requestid=%s&uuid=%s\n' \
+                      "$ALB" "$(seed_pid)" "$(hex)" "$(hex)" ;;
     esac
   done
 }
 
+# 씨앗: 실제로 존재하는 이메일/상품을 조회해야 '있는 행을 찾는' 비용이 반영된다.
+seed_email() {
+  local e
+  e=$(awk '/^e /{print $2}' "$SEED" 2>/dev/null | shuf -n1 2>/dev/null)
+  [ -n "${e:-}" ] && { echo "$e"; return; }
+  echo "probe$(hex)@k6.local"
+}
+seed_pid() {
+  local p
+  p=$(awk '/^p /{print $2}' "$SEED" 2>/dev/null | shuf -n1 2>/dev/null)
+  [ -n "${p:-}" ] && { echo "$p"; return; }
+  echo "p-$(hex 10)"
+}
+
+# 쓰기 경로도 잰다. 읽기만 재면 DB 쓰기 경합이 안 보인다.
+post_times() {
+  local i em pid t out=""
+  for i in $(seq 1 "${POST_N:-4}"); do
+    em="probe$(hex)@k6.local"
+    t=$(curl -s -o /dev/null -m "$TMO" -w '%{time_total}' \
+        -H 'Content-Type: application/json' \
+        -d "{\"requestid\":\"$(hex)\",\"uuid\":\"$(hex)\",\"username\":\"u$(hex)\",\"email\":\"$em\"}" \
+        "http://$ALB/v1/user" 2>/dev/null) || t=$TMO
+    out="$out $t"
+    echo "e $em" >> "$SEED"
+  done
+  # 씨앗 파일이 무한정 커지지 않게 최근 것만 남긴다
+  tail -n 200 "$SEED" > "$SEED.tmp" 2>/dev/null && mv "$SEED.tmp" "$SEED"
+  echo "$out"
+}
+
 times_for() {
-  # ★mapfile 을 쓰지 않는다. bash 4 부터 있는 빌트인인데 macOS 기본 bash 는 3.2 다.
-  #   없으면 조용히 빈 배열이 되고, probe 가 "결과 없음"을 낸다 — 방아쇠가 죽는다.
-  #   대회 PC(WSL)는 bash 5 라 거기선 돌지만, 도구가 환경 따라 조용히 달라지면 안 된다.
   local args=() line
   while IFS= read -r line; do args+=("$line"); done < <(build_args "$1")
   [ "${#args[@]}" = 0 ] && return 1
   curl -s -m "$TMO" -w '%{time_total}\n' "${args[@]}" 2>/dev/null
 }
 
-U=$(times_for user)
+U="$(times_for user) $(post_times)"
 P=$(times_for product)
 
 # stress 는 CPU 로 본다 (limits.cpu 대비 사용률)

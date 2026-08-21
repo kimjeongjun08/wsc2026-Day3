@@ -129,7 +129,7 @@ def probe_view(probe):
 PROBED = ("user", "product")
 
 
-def below_now(perf, live, p_bad, probe):
+def below_now(perf, live, p_bad, probe, memory=None):
     """지금 목표(90%)를 못 내고 있는 앱. 앱마다 '가장 좋은 신호'로 판정한다.
 
     ★stress 를 CPU 로만 보면 안 된다.
@@ -141,9 +141,24 @@ def below_now(perf, live, p_bad, probe):
       그래서 probe 로 못 재는 앱(stress)은 CloudWatch 통과율로 판정한다.
       느리지만(1~3분) stress 는 천천히 움직이는 신호라 그 지연을 감당할 수 있다.
     """
+    memory = {} if memory is None else memory
     bad = set()
     if probe:
         bad |= {a for a in p_bad if a in PROBED}
+        # ★안전망: 실측이 "괜찮다"는데 채점값이 계속 나쁘면 채점값을 믿는다.
+        #   실측은 표본이 15개뿐이고, 어떤 이유로든 실제 트래픽보다 싼 경로를
+        #   재고 있을 수 있다. 실측(practice 회차): probe 가 7분 내내 100% 라고 하는
+        #   동안 실제 통과율은 70% 였고, 그만큼 증설이 늦어 성능 5점을 잃었다.
+        #   CloudWatch 는 1~3분 늦지만 '채점되는 값 그 자체'다.
+        #   두 주기 연속으로 어긋나면 늦더라도 맞는 쪽을 따른다.
+        for a in PROBED:
+            if perf.get(a) is not None and perf[a] < TARGET_PERF and a not in bad:
+                memory["cw_bad"] = memory.get("cw_bad", {})
+                memory["cw_bad"][a] = memory["cw_bad"].get(a, 0) + 1
+                if memory["cw_bad"][a] >= int(os.environ.get("CW_OVERRIDE", 2)):
+                    bad.add(a)
+            elif memory.get("cw_bad", {}).get(a):
+                memory["cw_bad"][a] = 0
         # probe 로 못 재는 앱은 느려도 채점값(CloudWatch)으로 본다
         bad |= {a for a in live if a not in PROBED and perf[a] < TARGET_PERF}
         # CPU 가 확실히 포화면 그것도 신호로 인정한다 (지연보다 빠르다)
@@ -162,6 +177,10 @@ def advise(led, snap, nodes, memory, probe=None):
     live = [a for a in score.APPS if perf.get(a) is not None]
     if not live:
         return 0, ["지표가 아직 없다 — 대기"]
+    # ★below 는 주기당 한 번만 계산한다.
+    #   안에서 '채점값이 계속 나쁜지' 세는 카운터가 돌기 때문에, 여러 번 부르면
+    #   한 주기에 여러 칸이 올라가 안전망이 즉시 발동해버린다.
+    below = below_now(perf, live, p_bad, probe, memory)
     shot = ", ".join(f"{a}={perf[a]:.0f}%" for a in live)
     if p_shot:
         shot += " | 실측 " + p_shot
@@ -212,7 +231,7 @@ def advise(led, snap, nodes, memory, probe=None):
     #   지금도 못 내고 있다면 그건 아래 3)이 처리한다. 이 규칙의 유일한 역할은
     #   "이 회차엔 증설이 안 통한다"는 판정을 무시하고서라도 사게 하는 것이다.
     cum, _, _ = score.ledger_metrics(led)
-    failing = set(below_now(perf, live, p_bad, probe))
+    failing = set(below)
     danger = [a for a in live
               if (cum.get(a) if cum.get(a) is not None else 100.0) < GATE_DANGER
               and a in failing]
@@ -229,8 +248,7 @@ def advise(led, snap, nodes, memory, probe=None):
     #   2→4→5→6 대로 올리는 동안 user 통과율은 48% 근처에 붙어 있었고
     #   비용만 12 → 8 로 깎였다. 노드 1대는 2점이고 성능은 앱당 최대 4점이다.
     # "지금 나쁜가"는 실측이 정한다(below_now). CloudWatch 가 나빠도 실측이
-    # 멀쩡하면 이미 지나간 구간이므로 사지 않는다.
-    below = below_now(perf, live, p_bad, probe)
+    # 멀쩡하면 이미 지나간 구간이므로 사지 않는다 — 다만 두 주기 연속이면 따른다.
     if below:
         # ★한 번에 한 대씩, 효과를 보고 나서 다음.
         #   노드는 뜨는 데 2~3분 걸린다. 그 사이에 또 사면 3~4대를 한꺼번에 지르고,
@@ -391,7 +409,8 @@ def main():
     #   stress 는 전용 노드로 빼야 CFS 지분을 확보하는데 그게 영영 안 일어난다.
     _pb, _po, _ = probe_view(probe)
     _live = [x for x in score.APPS if perf.get(x) is not None]
-    bad = below_now(perf, _live, _pb, probe)
+    # advise 가 이미 세었으므로 여기서는 카운터를 건드리지 않는다(사본을 넘긴다)
+    bad = below_now(perf, _live, _pb, probe, dict(memory))
     worst = min((x for x in score.APPS if perf.get(x) is not None),
                 key=lambda x: perf[x], default="")
     print(f"BAD={','.join(bad)}")

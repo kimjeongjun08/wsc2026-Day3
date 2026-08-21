@@ -108,6 +108,22 @@ run("stress 도 통과율이 멀쩡하면 건드리지 않는다",
     snap((9000, 0, CALM), (9000, 0, CALM), (600, 0, SCALM)), 3, {}, -1, "축소",
     probe=P_CPU_OK)
 
+print("== 2d. ★안전망: 실측이 낙관해도 채점값이 계속 나쁘면 따른다")
+# practice 회차: probe 가 7분 내내 user 100% 라고 하는 동안 실제 통과율은 70% 였다.
+# 표본 15개로는 놓칠 수 있다. CloudWatch 는 늦지만 채점되는 값 그 자체다.
+PROBE_HAPPY = {"user": {"pass": 100, "p50": .05, "p90": .09, "max": .15, "n": 19},
+               "product": {"pass": 100, "p50": .04, "p90": .08, "max": .12, "n": 15},
+               "stress": {"cpu_m": 200, "cpu_pct": 10}}
+m = {}
+led3 = ledger(8, 2, {"user": 70, "product": 95, "stress": 95})
+sn3 = snap((9000, 0, EDGE), (9000, 0, CALM), (600, 0, SCALM))     # CloudWatch user 82%
+d1, _ = decide.advise(led3, sn3, 2, m, PROBE_HAPPY)
+d2, w2 = decide.advise(led3, sn3, 2, m, PROBE_HAPPY)
+ok = d1 == 0 and d2 == +1
+print(("  [O] " if ok else "  [X] ") + f"한 주기는 참고 두 주기째에 따른다 (1회={d1:+d}, 2회={d2:+d})")
+for x in w2: print("        " + x)
+if not ok: fails.append("CloudWatch 안전망")
+
 print("== 3. 증설이 효과 없다는 게 드러나면 그만둔다 (대조군의 함정)")
 led = ledger(63, 4, {"user": 48})
 m = {"last_upsize": {"nodes": 4, "minute": 60, "perf": {"user": 48.0, "product": 99.0, "stress": 72.0}}}
