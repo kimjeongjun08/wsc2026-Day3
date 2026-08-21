@@ -140,6 +140,27 @@ ok2 = d2 == 1
 print(("  [O] " if ok2 else "  [X] ") + f"누적 32% (절벽 근처) → 한 칸  → {d2:+d}")
 if not ok2: fails.append("게이트 한 칸")
 
+print("== 2f. ★앱이 바뀌어 probe 가 눈이 멀면 채점값으로 물러난다")
+# 실측: 경로를 틀리게 하니 pass 100%, p50 10ms 로 "완벽하다"고 보고했다.
+# 앱 API 가 바뀌면 대회에서 그대로 벌어진다. POST 가 2xx 로 오는지로 판별한다.
+BLIND = {"user": {"pass": 100, "p50": .01, "p90": .02, "max": .1, "n": 19,
+                  "ok2xx": 0, "dead": 0},
+         "product": {"pass": 100, "p50": .01, "p90": .02, "max": .1, "n": 15,
+                     "ok2xx": 0, "dead": 0},
+         "stress": {"cpu_m": 100, "cpu_pct": 5}}
+d, w = decide.advise(ledger(30, 2, {"user": 95}),
+                     snap((9000, 0, BAD), (9000, 0, CALM), (600, 0, SCALM)), 2, {}, BLIND)
+ok = d == +1 and any("눈이" in x or "경로가 앱과" in x for x in w)
+print(("  [O] " if ok else "  [X] ") + f"실측이 100% 라 해도 무시하고 채점값을 따른다  → {d:+d}")
+for x in w: print("        " + x)
+if not ok: fails.append("눈먼 probe 감지")
+SEEING = dict(BLIND); SEEING["user"] = dict(BLIND["user"]); SEEING["user"]["ok2xx"] = 4
+d2, _ = decide.advise(ledger(30, 2, {"user": 95}),
+                      snap((9000, 0, BAD), (9000, 0, CALM), (600, 0, SCALM)), 2, {}, SEEING)
+ok2 = d2 == 0
+print(("  [O] " if ok2 else "  [X] ") + f"정상 응답을 받고 있으면 실측을 믿는다  → {d2:+d}")
+if not ok2: fails.append("정상 probe 신뢰")
+
 print("== 3. 증설이 효과 없다는 게 드러나면 그만둔다 (대조군의 함정)")
 led = ledger(63, 4, {"user": 48})
 m = {"last_upsize": {"nodes": 4, "minute": 60, "perf": {"user": 48.0, "product": 99.0, "stress": 72.0}}}

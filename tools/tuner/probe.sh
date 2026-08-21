@@ -52,6 +52,42 @@ ALB=${TARGET#http://}; ALB=${ALB#https://}; ALB=${ALB%%/*}
 hex() { od -An -tx1 -N16 /dev/urandom | tr -d ' \n'; }
 SEED=${SEED_FILE:-.probe-seed}
 
+# ★경로를 코드에 박지 않는다. ALB 리스너 규칙에서 읽는다.
+#   앱의 API 가 바뀌면 terraform 이 ALB 규칙도 같이 바꾼다. 그러면 probe 가
+#   자동으로 따라간다. 박아두면 앱이 바뀌는 순간 눈이 먼다 —
+#   그것도 조용히. 틀린 경로는 404 를 빠르게 돌려주므로 "전부 통과"로 보고된다.
+#   실측(2026-08-21): 경로를 일부러 틀리게 하니 pass 100%, p50 10ms 가 나왔다.
+#   캐시는 30분 — 회차 중에 규칙이 바뀔 일은 없고 매 주기 API 를 부를 이유도 없다.
+PATHS_CACHE=${PATHS_CACHE:-.probe-paths}
+discover_paths() {
+  local lb ls out
+  if [ -f "$PATHS_CACHE" ]; then
+    local age; age=$(( $(date +%s) - $(mtime "$PATHS_CACHE") ))
+    [ "$age" -lt "${PATHS_TTL:-1800}" ] && { cat "$PATHS_CACHE"; return 0; }
+  fi
+  lb=$(aws elbv2 describe-load-balancers --region "$REGION" --names "$ALB_NAME" \
+       --query 'LoadBalancers[0].LoadBalancerArn' --output text 2>/dev/null) || return 1
+  ls=$(aws elbv2 describe-listeners --region "$REGION" --load-balancer-arn "$lb" \
+       --query 'Listeners[0].ListenerArn' --output text 2>/dev/null) || return 1
+  out=$(aws elbv2 describe-rules --region "$REGION" --listener-arn "$ls" \
+        --query 'Rules[].[Conditions[0].PathPatternConfig.Values[0]]' --output text 2>/dev/null \
+        | sed 's/\*$//' | grep '^/' )
+  [ -z "${out:-}" ] && return 1
+  printf '%s\n' "$out" > "$PATHS_CACHE"
+  printf '%s\n' "$out"
+}
+
+# 앱 이름 → 경로. 규칙에서 못 읽으면 기본값으로 떨어지되 그 사실을 알린다.
+path_for() {  # $1=앱이름
+  local pp
+  pp=$(discover_paths 2>/dev/null | grep -m1 -- "/$1")
+  if [ -z "${pp:-}" ]; then
+    echo "probe: ALB 규칙에서 '$1' 경로를 못 읽었다 — 기본값 /v1/$1 을 쓴다" >&2
+    pp="/v1/$1"
+  fi
+  echo "$pp"
+}
+
 # ★공식 트래픽과 같은 구성으로 쏜다.
 #   실측(2026-08-21 practice 회차): probe 는 7분 내내 "user 100% 통과"라고 했는데
 #   실제 채점은 70% 였다. 통과율 70% 인 모집단에서 15개를 뽑아 전부 통과할 확률은
@@ -67,10 +103,10 @@ build_args() {  # $1=앱  → "-o /dev/null <url>" 목록 (POST 는 별도 처�
   for i in $(seq 1 "$N"); do
     printf -- '-o\n/dev/null\n'
     case "$n" in
-      user)    printf 'http://%s/v1/user?email=%s&requestid=%s&uuid=%s\n' \
-                      "$ALB" "$(seed_email)" "$(hex)" "$(hex)" ;;
-      product) printf 'http://%s/v1/product?id=%s&requestid=%s&uuid=%s\n' \
-                      "$ALB" "$(seed_pid)" "$(hex)" "$(hex)" ;;
+      user)    printf 'http://%s%s?email=%s&requestid=%s&uuid=%s\n' \
+                      "$ALB" "$P_USER" "$(seed_email)" "$(hex)" "$(hex)" ;;
+      product) printf 'http://%s%s?id=%s&requestid=%s&uuid=%s\n' \
+                      "$ALB" "$P_PRODUCT" "$(seed_pid)" "$(hex)" "$(hex)" ;;
     esac
   done
 }
@@ -94,11 +130,13 @@ post_times() {
   local i em pid t out=""
   for i in $(seq 1 "${POST_N:-4}"); do
     em="probe$(hex)@k6.local"
-    t=$(curl -s -o /dev/null -m "$TMO" -w '%{time_total}' \
+    t=$(curl -s -o /dev/null -m "$TMO" -w '%{time_total} %{http_code}' \
         -H 'Content-Type: application/json' \
         -d "{\"requestid\":\"$(hex)\",\"uuid\":\"$(hex)\",\"username\":\"u$(hex)\",\"email\":\"$em\"}" \
-        "http://$ALB/v1/user" 2>/dev/null) || t=$TMO
-    out="$out $t"
+        "http://$ALB$P_USER" 2>/dev/null) || t="$TMO 000"
+    # ★한 줄에 하나씩. 여러 개를 한 줄에 붙이면 파서가 통째로 버린다.
+    out="$out
+$t"
     echo "e $em" >> "$SEED"
   done
   # 씨앗 파일이 무한정 커지지 않게 최근 것만 남긴다
@@ -110,10 +148,13 @@ times_for() {
   local args=() line
   while IFS= read -r line; do args+=("$line"); done < <(build_args "$1")
   [ "${#args[@]}" = 0 ] && return 1
-  curl -s -m "$TMO" -w '%{time_total}\n' "${args[@]}" 2>/dev/null
+  curl -s -m "$TMO" -w '%{time_total} %{http_code}\n' "${args[@]}" 2>/dev/null
 }
 
-U="$(times_for user) $(post_times)"
+P_USER=$(path_for user)
+P_PRODUCT=$(path_for product)
+U="$(times_for user)
+$(post_times)"
 P=$(times_for product)
 
 # stress 는 CPU 로 본다 (limits.cpu 대비 사용률)
@@ -128,14 +169,40 @@ SLA = {"user": 0.200, "product": 0.200}
 
 
 def stat(raw, sla):
-    v = sorted(float(x) for x in raw.split() if x)
-    if not v:
+    # ★상태 코드를 같이 본다.
+    #   예전엔 소요 시간만 쟀다. 그러면 앱의 API 가 바뀌어 경로가 404 가 돼도
+    #   "빠르게 응답했으니 통과"로 센다 — 방아쇠가 영원히 안 울린다.
+    #   probe 는 도구의 눈이다. 눈이 엉뚱한 걸 보고 있으면 나머지는 다 무의미하다.
+    #   2xx/4xx 는 앱이 살아서 처리한 것이고, 5xx/000(연결실패)은 아니다.
+    #   다만 '전부 4xx' 면 경로가 잘못됐다는 뜻이므로 그 사실을 남긴다.
+    pairs = []
+    for line in raw.split("\n"):
+        f = line.split()
+        if len(f) >= 2:
+            try:
+                pairs.append((float(f[0]), int(f[1])))
+            except ValueError:
+                pass
+        elif len(f) == 1:
+            try:
+                pairs.append((float(f[0]), 200))
+            except ValueError:
+                pass
+    if not pairs:
         return None
+    ok2xx = sum(1 for _, c in pairs if 200 <= c < 300)
+    dead = sum(1 for _, c in pairs if c >= 500 or c == 0)
+    v = sorted(t for t, c in pairs if c < 500 and c != 0) or [sla * 2]
     def q(p):
         return v[min(len(v) - 1, int(round(p / 100.0 * (len(v) - 1))))]
-    return {"pass": round(100.0 * sum(1 for x in v if x <= sla) / len(v)),
-            "p50": round(q(50), 3), "p90": round(q(90), 3),
-            "max": round(v[-1], 3), "n": len(v)}
+    out = {"pass": round(100.0 * sum(1 for x in v if x <= sla) / len(v)),
+           "p50": round(q(50), 3), "p90": round(q(90), 3),
+           "max": round(v[-1], 3), "n": len(v),
+           "ok2xx": ok2xx, "dead": dead}
+    if dead:
+        # 연결 실패·5xx 는 '통과'에서 제외하고 비율에 반영한다
+        out["pass"] = round(out["pass"] * (len(pairs) - dead) / len(pairs))
+    return out
 
 
 out = {}

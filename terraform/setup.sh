@@ -282,6 +282,10 @@ done
 
 kubectl apply -f /home/ec2-user/k8s/hpa.yaml
 kubectl apply -f /home/ec2-user/k8s/pdb.yaml
+# ★자리표시 파드. replicas 0 으로 시작하고 튜너가 필요할 때만 올린다.
+#   부하가 없으면 Karpenter 는 노드를 안 만든다(Pending 파드가 없으니까).
+#   그때 "N대로 만들라"는 지시를 실행하는 유일한 수단이다.
+kubectl apply -f /home/ec2-user/k8s/overprovisioning.yaml
 # overprovisioning(pause)은 prewarm.py가 실행 시 자기완결형으로 직접 apply → 여기서 파일 apply 안 함(파일 없음).
 
 # Wait for deployments to be ready

@@ -145,6 +145,13 @@ if s: print('   [O] stress CPU %d%%' % s['cpu_pct'])
 sys.exit(bad)" || fail=$((fail+1))
   if [ "$E" -gt 10000 ]; then bad "probe 가 ${E}ms 걸렸다 — 주기를 잡아먹는다 (정상 2~3초)"
   else ok "probe 소요 ${E}ms"; fi
+  # ★probe 가 앱의 정상 응답을 받고 있나. 경로가 앱과 안 맞으면 404 를 빨리 받고
+  #   "전부 통과"라고 거짓 보고한다. 생성(POST)이 2xx 로 오는지로 판별한다.
+  O=$(echo "$PR" | python3 -c "import json,sys; print((json.load(sys.stdin).get('user') or {}).get('ok2xx','?'))" 2>/dev/null)
+  if [ "${O:-0}" = 0 ]; then
+    bad "probe 가 앱의 정상 응답(2xx)을 한 건도 못 받았다 — 경로가 앱과 안 맞는다"
+    echo "       probe.sh 의 /v1/user, /v1/product 경로가 이번 앱과 같은지 확인해라"
+  else ok "probe 가 앱 정상 응답 ${O}건 확인 (경로가 맞다)"; fi
 fi
 
 echo "== 7. HPA 상한이 노드에 비해 터무니없지 않나"

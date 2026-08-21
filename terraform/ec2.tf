@@ -49,7 +49,13 @@ resource "aws_s3_object" "app_binaries" {
 
 # Upload static k8s files to S3 (setup 버킷)
 resource "aws_s3_object" "k8s_static" {
-  for_each = toset(["service.yaml", "hpa.yaml", "pdb.yaml", "iam_policy.json", "install-karpenter.sh", "priorityclass.yaml"])
+  # ★overprovisioning.yaml 을 빠뜨리고 있었다.
+  #   자리표시 파드(pause, priority -10)로 노드를 미리 확보하는 장치인데,
+  #   매니페스트는 레포에 있고 priorityclass.yaml 에 pause-priority 까지
+  #   정의돼 있는데 정작 이 파일만 S3 로 안 올라가서 배포된 적이 없다.
+  #   실측(2026-08-21): apply.sh 가 이걸 scale 하려다 조용히 실패하고 있었다
+  #   (deployments.apps "overprovisioning" not found).
+  for_each = toset(["service.yaml", "hpa.yaml", "pdb.yaml", "iam_policy.json", "install-karpenter.sh", "priorityclass.yaml", "overprovisioning.yaml"])
   bucket   = aws_s3_bucket.setup.bucket
   key      = "k8s/${each.value}"
   source   = "${path.module}/k8s/${each.value}"

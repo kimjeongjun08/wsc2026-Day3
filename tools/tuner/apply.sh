@@ -123,7 +123,12 @@ WANT_WARM=$((DOMAINS - MIN_DOMAINS_FLOOR))
 CUR_WARM=$(bx "kubectl -n $NS get deploy overprovisioning -o jsonpath='{.spec.replicas}'" 2>/dev/null | tr -d ' \n')
 if [ "${CUR_WARM:-x}" != "$WANT_WARM" ]; then
   echo "   자리표시 파드 ${CUR_WARM:-?} → $WANT_WARM (노드를 확실히 만든다, 롤아웃 없음)"
-  bx "kubectl -n $NS scale deploy overprovisioning --replicas=$WANT_WARM >/dev/null 2>&1 || true"
+  # ★실패를 삼키지 않는다. 예전엔 || true 로 넘겨서, Deployment 가 아예 없는데도
+  #   조용히 지나갔다(실측: overprovisioning 이 배포된 적이 없었다).
+  if ! bx "kubectl -n $NS scale deploy overprovisioning --replicas=$WANT_WARM >/dev/null 2>&1"; then
+    echo "   !! 자리표시 파드를 못 만들었다 — overprovisioning 이 배포됐는지 확인해라"
+    echo "      kubectl -n $NS get deploy overprovisioning"
+  fi
 fi
 
 bx "kubectl patch nodepool apdev-pool --type=merge -p '{\"spec\":{\"limits\":{\"cpu\":\"$LIMIT\"}}}' >/dev/null

@@ -50,6 +50,8 @@ E5_SEVERE = float(os.environ.get("E5_SEVERE", 5.0))     # 이 위면 즉시
 E5_WARN = float(os.environ.get("E5_WARN", 1.0))         # 이 위 + 누적이 나쁘면
 AVAIL_DANGER = float(os.environ.get("AVAIL_DANGER", 97.0))
 GATE_FAR = float(os.environ.get("GATE_FAR", 20.0))   # 누적이 이보다 낮으면 두 칸씩
+STEP_RATIO = float(os.environ.get("STEP_RATIO", 2.5))    # 이 배수 이상 뛰면 계단으로 본다
+STEP_MIN_RPS = float(os.environ.get("STEP_MIN_RPS", 40))  # 잡음 방지 하한
 GATE_DANGER = float(os.environ.get("GATE_DANGER", 40))  # 누적이 이 밑이면 게이트 위험
 # ★히스테리시스. 목표 tier 는 90% 다.
 #   90 에서 늘리고 90 에서 줄이면 경계에서 노드가 왔다갔다 하고, 그때마다 롤아웃이
@@ -101,6 +103,27 @@ def estimate(snap):
             p = p * (req - e5) / req
         perf[app] = p
     return perf, avail, rps
+
+
+def probe_trustworthy(probe):
+    """probe 가 '앱이 실제로 처리한 응답'을 보고 있는지 확인한다.
+
+    ★앱의 API 가 바뀌면 probe 는 404 를 받는다. 그런데 404 도 빨리 오므로
+      "전부 통과"라고 보고한다 — 방아쇠가 영원히 안 울린다.
+      실측(2026-08-21): 경로를 일부러 틀리게 하니 pass 100%, p50 10ms 가 나왔다.
+      probe 는 도구의 눈이다. 눈이 엉뚱한 걸 보고 있으면 나머지는 다 무의미하다.
+
+      판별은 POST 로 한다. 조회는 대상이 없으면 정상적으로도 404 지만,
+      생성은 경로가 맞으면 2xx 가 돌아온다. 하나도 없으면 경로를 의심한다.
+      이때는 실측을 버리고 채점값(CloudWatch)으로 판단한다 — 느려도 맞는 쪽이다.
+    """
+    u = (probe or {}).get("user") or {}
+    if "ok2xx" not in u:
+        return True, ""          # 옛 형식이면 그대로 믿는다
+    if u.get("ok2xx", 0) > 0:
+        return True, ""
+    return False, ("실측이 앱의 정상 응답(2xx)을 한 건도 못 받았다 — "
+                   "경로가 앱과 안 맞는 것 같다. 채점값으로만 판단한다")
 
 
 def probe_view(probe):
@@ -172,6 +195,9 @@ def below_now(perf, live, p_bad, probe, memory=None):
 def advise(led, snap, nodes, memory, probe=None):
     """반환: (delta, 이유들). 회차 길이·남은 시간을 쓰지 않는다."""
     perf, avail, rps = estimate(snap)
+    trust, blind_msg = probe_trustworthy(probe)
+    if not trust:
+        probe = None                      # 실측을 아예 안 쓴다
     p_bad, p_ok, p_shot = probe_view(probe)
     why = []
     total_rps = sum(rps.values())
@@ -183,6 +209,8 @@ def advise(led, snap, nodes, memory, probe=None):
     #   한 주기에 여러 칸이 올라가 안전망이 즉시 발동해버린다.
     below = below_now(perf, live, p_bad, probe, memory)
     shot = ", ".join(f"{a}={perf[a]:.0f}%" for a in live)
+    if blind_msg:
+        why.append("!! " + blind_msg)
     if p_shot:
         shot += " | 실측 " + p_shot
 
@@ -196,6 +224,72 @@ def advise(led, snap, nodes, memory, probe=None):
             memory.pop("escalation_pays", None)
             why.append(f"트래픽이 {base:.0f} → {total_rps:.0f}rps 로 올랐다 "
                        f"— 증설 판정을 다시 연다")
+
+    # ── 0) 계단 감지 (앞먹임) ────────────────────────────────────────────
+    #   ★지표가 나빠지길 기다리면 늦는다.
+    #     실측(2026-08-21 공식 120분): 계곡 8rps 에서 peak2 311rps 로 34배 뛰었는데,
+    #     도구는 통과율이 떨어지는 걸 확인한 뒤 한 칸씩 올렸다.
+    #       m55 계단 → m58 첫 증설(2→3) → m66 5대.  그 사이 4분간 통과율 0%,
+    #       분당 7,800건 × 4분 = 31,000건이 오염됐고 누적이 45% → 28% 로 무너져
+    #       비용 게이트가 뚫렸다(11점 상실).
+    #     계곡 20분을 2대로 버텨 아낀 건 비용 0~1점이다. 1점 아끼고 11점을 잃었다.
+    #
+    #   해법은 "계곡에도 켜두기"가 아니다(계곡이 길면 그게 더 손해다).
+    #   트래픽은 즉시 관측된다 — 나빠지기를 기다릴 이유가 없다.
+    #   지금 rps 를 지금 노드로 감당 못 하는 게 뻔하면 바로 그만큼 뛴다.
+    seen = memory.get("rps_seen") or {}
+    prev_rps = memory.get("last_rps", 0.0)
+    memory["last_rps"] = total_rps
+    if prev_rps > 0 and total_rps > prev_rps * STEP_RATIO and total_rps > STEP_MIN_RPS:
+        # 과거에 '이 정도 rps 를 몇 대로 감당했나'를 기억해 두고 그 값을 쓴다.
+        # 기억이 없으면 rps 비례로 잡는다 — 지금 노드로 prev_rps 를 감당했으니
+        # total_rps 는 그 비율만큼 필요하다고 본다.
+        want = 0
+        for r, n in sorted(seen.items(), key=lambda x: -float(x[0])):
+            if float(r) >= total_rps * 0.8:
+                want = max(want, int(n))
+        if not want:
+            # ★비례로 잡으면 안 된다. 바닥 2대는 9rps 를 '여유롭게' 처리하던 값이라
+            #   34배 뛰었다고 34배가 필요한 게 아니다(실측: 재생에서 8대까지 튀었다).
+            #   앞먹임의 값어치는 정확도가 아니라 속도다 — 몇 대가 맞는지는
+            #   다음 주기들이 실측으로 다듬는다. 여기서는 계단 크기만큼만 크게 뛴다.
+            ratio = total_rps / max(prev_rps, 1.0)
+            jump = 1 if ratio < 5 else (2 if ratio < 15 else 3)
+            want = nodes + jump
+        want = min(want, int(os.environ.get("MAX_NODES", 8)))
+        if want > nodes:
+            why.append(f"트래픽 계단 {prev_rps:.0f} → {total_rps:.0f}rps ({total_rps/prev_rps:.0f}배) "
+                       f"— 지표를 기다리지 않고 {nodes}→{want}대")
+            return want - nodes, why
+    # ★내려가는 계단도 즉시 반영한다.
+    #   올릴 때만 빠르고 내릴 때 한 칸씩이면, 피크가 끝난 뒤 한참을 비싸게 쓴다.
+    #   비용은 분 평균이라 그 지연이 그대로 점수다.
+    #   다만 내리는 건 '지금 여유롭다'가 확인될 때만 한다 — 성급하면 다시 무너진다.
+    if (prev_rps > total_rps * STEP_RATIO and nodes > FLOOR
+            and total_rps < prev_rps and live
+            and all((perf.get(a) or 0) >= SCALE_IN_PERF for a in live)):
+        # ★기록을 아무거나 집으면 안 된다.
+        #   내려갈 때는 '새 rps 에 가까운' 기록만 의미가 있다. 대역을 제한하지 않으면
+        #   피크 때 기록(300rps→8대)을 집어와 결국 안 내려간다(실측: 재생에서 발견).
+        want = 0
+        for r, n in sorted(seen.items(), key=lambda x: float(x[0])):
+            if total_rps <= float(r) <= total_rps * 2:
+                want = int(n)
+                break
+        if not want:
+            want = int(round(nodes * total_rps / max(prev_rps, 1.0)))
+        want = max(FLOOR, want)
+        if want < nodes:
+            why.append(f"트래픽 계단 하강 {prev_rps:.0f} → {total_rps:.0f}rps "
+                       f"— {nodes}→{want}대로 즉시 반납")
+            return want - nodes, why
+
+    # 잘 버티고 있는 조합은 기억해 둔다(다음 계단에서 바로 쓴다)
+    if total_rps > 1 and all((perf.get(a) or 0) >= TARGET_PERF for a in live):
+        key = str(int(total_rps // 25 * 25))
+        if int(seen.get(key, 99)) > nodes:
+            seen[key] = nodes
+            memory["rps_seen"] = seen
 
     # ── 1) 가용성 방어 ────────────────────────────────────────────────────
     #   5xx 는 되돌릴 수 없다. 이미 흘린 요청은 회차 끝까지 분모에 남는다.
