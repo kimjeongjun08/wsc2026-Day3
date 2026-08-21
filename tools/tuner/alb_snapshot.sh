@@ -33,14 +33,20 @@ END=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 PERIOD=60
 
 # get-metric-data 로 앱 3개 × (요청수, 5xx, 백분위 8개) 를 한 번에 가져온다.
-Q=$(LBDIM="$lbdim" PERIOD="$PERIOD" python3 - <<'PY'
-import json, os, sys
+# ★타깃그룹 목록은 환경변수로 넘긴다.
+#   `python3 - <<'PY' ... PY <<<"$tgs"` 로 쓰면 프로그램과 데이터가 둘 다 stdin 을
+#   노려서 조용히 빈 결과가 나온다(실측: 쿼리가 [] 가 되어 스냅샷이 통째로 실패했다).
+Q=$(LBDIM="$lbdim" PERIOD="$PERIOD" TGS="$tgs" python3 - <<'PY'
+import json, os
 lbdim, period = os.environ["LBDIM"], int(os.environ["PERIOD"])
 qs, i = [], 0
-for line in sys.stdin:
+for line in os.environ["TGS"].splitlines():
     line = line.strip()
     if not line: continue
-    name, arn = line.split()
+    parts = line.split()
+    if len(parts) != 2:
+        continue
+    name, arn = parts
     app = name.replace("apdev-", "")
     tg = arn.split(":", 5)[-1]
     dims = [{"Name": "LoadBalancer", "Value": lbdim}, {"Name": "TargetGroup", "Value": tg}]
@@ -56,7 +62,7 @@ for line in sys.stdin:
         add("TargetResponseTime", f"p{p}", f"p{p}")
 print(json.dumps(qs))
 PY
-<<<"$tgs")
+)
 
 RAW=$(aws cloudwatch get-metric-data --region "$REGION" \
       --start-time "$START" --end-time "$END" \

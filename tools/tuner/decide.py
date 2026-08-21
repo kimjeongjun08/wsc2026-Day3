@@ -20,6 +20,14 @@
 #                    "늘려도 안 움직인다"가 실측으로 드러나면 그때부터 멈춘다.
 #   4) 축소         — 전 앱이 여유로우면 즉시 내린다. 여기가 제일 크게 번다.
 #
+# ★신호를 두 개 쓴다. 역할이 다르다.
+#   원장(누적 점수) : CloudWatch 백분위. 채점되는 값 그 자체지만 1~3분 늦다
+#                     (실측: 11:47:53 에 최신 데이터포인트가 11:46:00 짜리였다).
+#   방아쇠(대응)    : probe.sh 의 실시간 실측. ALB 로 직접 GET 을 쏴서 지금 파드가
+#                     어떤지 본다. stress 는 파드 CPU 로 본다(재는 게 곧 부하라서).
+#   느린 값으로 방아쇠를 당기면 피크의 20~30% 를 눈감고 지나간다. 성능은 '요청'
+#   가중이라 그 구간은 되돌릴 수 없다. 그래서 "지금 나쁜가"는 실측이 정한다.
+#
 # ★회차 길이를 묻지 않는다.
 #   비용은 '분' 평균이다. 그러면 매 분 제약을 만족하는 최소 노드 수를 쓰는 것이
 #   회차 길이와 무관하게 평균을 최소로 만든다 — 끝까지 전망할 필요가 없다.
@@ -37,6 +45,13 @@ GATE_MARGIN= float(os.environ.get("GATE_MARGIN", 45))  # 통과율이 이 밑이
 #   돌아 가용성이 깎인다. 늘리는 선(90)과 줄이는 선(96)을 벌려 놓는다.
 TARGET_PERF   = float(os.environ.get("TARGET_PERF", 90))
 SCALE_IN_PERF = float(os.environ.get("SCALE_IN_PERF", 95))
+# 실측 표본은 15개뿐이라 오차가 ±15%p 쯤 된다. 그래서 판정선을 크게 벌린다.
+#   PROBE_BAD  : 이 밑이면 잡음으로 설명이 안 된다 → 지금 나쁘다
+#   PROBE_OK   : 이 위여야 축소를 허용한다
+PROBE_BAD = float(os.environ.get("PROBE_BAD", 70))
+PROBE_OK = float(os.environ.get("PROBE_OK", 93))
+STRESS_CPU_BAD = float(os.environ.get("STRESS_CPU_BAD", 88))
+STRESS_CPU_OK = float(os.environ.get("STRESS_CPU_OK", 60))
 FLOOR = int(os.environ.get("FLOOR_NODES", 2))
 
 
@@ -71,15 +86,41 @@ def estimate(snap):
     return perf, avail, rps
 
 
-def advise(led, snap, nodes, memory):
+def probe_view(probe):
+    """실측 스냅샷 → 앱별 (지금 나쁜가, 지금 여유로운가, 표시문구)."""
+    bad, ok, shots = [], [], []
+    for app in ("user", "product"):
+        d = (probe or {}).get(app)
+        if not d or not d.get("n"):
+            continue
+        pv = d["pass"]
+        shots.append("%s=%d%%(p90 %.0fms)" % (app, pv, d["p90"] * 1000))
+        if pv < PROBE_BAD:
+            bad.append(app)
+        if pv >= PROBE_OK:
+            ok.append(app)
+    d = (probe or {}).get("stress")
+    if d and "cpu_pct" in d:
+        shots.append("stress=CPU %d%%" % d["cpu_pct"])
+        if d["cpu_pct"] >= STRESS_CPU_BAD:
+            bad.append("stress")
+        if d["cpu_pct"] <= STRESS_CPU_OK:
+            ok.append("stress")
+    return bad, ok, ", ".join(shots)
+
+
+def advise(led, snap, nodes, memory, probe=None):
     """반환: (delta, 이유들). 회차 길이·남은 시간을 쓰지 않는다."""
     perf, avail, rps = estimate(snap)
+    p_bad, p_ok, p_shot = probe_view(probe)
     why = []
     total_rps = sum(rps.values())
     live = [a for a in score.APPS if perf.get(a) is not None]
     if not live:
         return 0, ["지표가 아직 없다 — 대기"]
     shot = ", ".join(f"{a}={perf[a]:.0f}%" for a in live)
+    if p_shot:
+        shot += " | 실측 " + p_shot
 
     # ★"증설해도 소용없다"는 판정은 그때의 트래픽에서만 참이다.
     #   공식 회차는 peak1 → 계곡 → peak2 로 강도가 계단식으로 올라간다.
@@ -119,7 +160,13 @@ def advise(led, snap, nodes, memory):
     #   실측으로 드러났으면 그만둔다. 대조군이 정확히 그 함정에 빠졌다 —
     #   2→4→5→6 대로 올리는 동안 user 통과율은 48% 근처에 붙어 있었고
     #   비용만 12 → 8 로 깎였다. 노드 1대는 2점이고 성능은 앱당 최대 4점이다.
-    below = [a for a in live if perf[a] < TARGET_PERF]
+    # ★"지금 나쁜가"는 실측이 정한다. CloudWatch 는 몇 분 전 이야기다.
+    #   실측이 나쁘다고 하면 CloudWatch 가 아직 좋아 보여도 대응한다.
+    #   실측이 멀쩡한데 CloudWatch 만 나쁘면, 이미 지나간 구간이므로 사지 않는다.
+    if probe:
+        below = sorted(set(p_bad))
+    else:
+        below = [a for a in live if perf[a] < TARGET_PERF]
     if below:
         # ★한 번에 한 대씩, 효과를 보고 나서 다음.
         #   노드는 뜨는 데 2~3분 걸린다. 그 사이에 또 사면 3~4대를 한꺼번에 지르고,
@@ -142,7 +189,12 @@ def advise(led, snap, nodes, memory):
     #   비용은 '분' 평균이다. 트래픽이 없는 1분과 피크 1분의 값이 같다.
     #   실측 대조군은 하강 구간 40분을 평균 4.93대로 버텨 비용 2점을 그냥 버렸다.
     #   전 앱이 여유선(96%) 위면 한 대 반납한다. 모자라면 3)이 다시 올린다.
-    if nodes > FLOOR and all(perf[a] >= SCALE_IN_PERF for a in live):
+    #   ★축소는 두 신호가 모두 여유로울 때만 한다. 느린 쪽만 보고 내리면
+    #     방금 올라온 부하를 못 보고 용량을 뺏는다.
+    calm_slow = all(perf[a] >= SCALE_IN_PERF for a in live)
+    calm_fast = (not probe) or (not p_bad and len(p_ok) >= len([
+        a for a in ("user", "product", "stress") if (probe or {}).get(a)]))
+    if nodes > FLOOR and calm_slow and calm_fast:
         why.append(f"전 앱 여유[{shot}] → 축소 ({nodes}→{nodes-1}대, {total_rps:.0f}rps)")
         return -1, why
 
@@ -176,6 +228,8 @@ def review_upsize(led, memory, perf):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--snapshot", required=True)
+    ap.add_argument("--probe", default=None,
+                    help="probe.sh 출력(JSON 문자열 또는 파일). 대응 방아쇠로 쓴다")
     ap.add_argument("--nodes", type=int, required=True)
     ap.add_argument("--ledger", default=".round-ledger.json")
     ap.add_argument("--dt", type=float, default=None,
@@ -184,6 +238,12 @@ def main():
     a = ap.parse_args()
 
     snap = json.loads(open(a.snapshot).read() if os.path.exists(a.snapshot) else a.snapshot)
+    probe = None
+    if a.probe:
+        try:
+            probe = json.loads(open(a.probe).read() if os.path.exists(a.probe) else a.probe)
+        except Exception:
+            probe = None
     st = json.load(open(a.ledger)) if os.path.exists(a.ledger) else \
         {"led": score.blank_ledger(), "memory": {}}
     led, memory = st["led"], st.get("memory", {})
@@ -200,16 +260,25 @@ def main():
     st_last = now
 
     perf, avail, rps = estimate(snap)
-    req = {x: snap.get(x, {}).get("req", 0.0) for x in score.APPS}
-    ok = {x: req[x] - snap.get(x, {}).get("e5", 0.0) for x in score.APPS}
-    under = {x: req[x] * (perf[x] or 0.0) / 100.0 for x in score.APPS}
+    # ★표본이 모자라 통과율을 못 낸 앱은 원장에 아예 넣지 않는다.
+    #   예전엔 요청 수만 더하고 통과는 0 으로 넣었다. 그러면 조용한 구간마다
+    #   그 앱의 누적 통과율이 0 쪽으로 끌려가고, 결국 "게이트(30%) 위험"으로
+    #   오판해 필요도 없는 노드를 산다. 모르는 건 세지 않는 게 맞다.
+    req, ok, under = {}, {}, {}
+    for x in score.APPS:
+        if perf.get(x) is None:
+            continue
+        r = snap.get(x, {}).get("req", 0.0)
+        req[x] = r
+        ok[x] = r - snap.get(x, {}).get("e5", 0.0)
+        under[x] = r * perf[x] / 100.0
     # 트래픽이 시작된 뒤부터만 원장에 쌓는다 — 대기 시간이 비용 평균을 왜곡한다
     if sum(rps.values()) >= 1.0 and dt > 0:
         score.ledger_add(led, dt, a.nodes, req, ok, under)
         memory["started"] = True
 
     verdict = review_upsize(led, memory, perf)
-    delta, why = advise(led, snap, a.nodes, memory)
+    delta, why = advise(led, snap, a.nodes, memory, probe)
     if verdict:
         why.insert(0, verdict)
     if delta > 0:

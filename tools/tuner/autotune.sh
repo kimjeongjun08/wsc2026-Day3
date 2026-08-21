@@ -37,7 +37,14 @@ STRUCT_COOLDOWN=${STRUCT_COOLDOWN:-600}   # 구조 변경 최소 간격(초)
 MIN_GAIN=${MIN_GAIN:-1.0}      # 이 점수 이상 좋아질 때만 구성을 바꾼다 (잦은 교체 방지)
 STATE=${STATE:-.autotune-state}
 MAX_NODES=${MAX_NODES:-8}
-CAP_MARGIN=${CAP_MARGIN:-2}       # 하한 위로 몇 대까지 자동 증설을 허용할지
+# ★상한을 하한과 같이 둔다 (기본 0).
+#   예전엔 +2 를 열어놨다. "예상 못 한 스파이크를 Karpenter 가 흡수하게" 라는 이유였는데,
+#   실측에서 이게 비용을 그냥 흘리는 구멍이었다: 튜너는 2대를 원하는데 HPA 가 파드를
+#   늘리면 Karpenter 가 상한까지 알아서 붙여 4대가 됐다. 노드 2대 = 비용 4점이다.
+#   게다가 그 4대의 CPU 는 5% / 72% / 1% / 43% 로 놀고 있었다 — 늘어난 게 일도 안 했다.
+#   지금은 probe.sh 가 실시간으로 재서 20~60초 안에 대응하므로 열어둘 이유가 없다.
+#   노드 수는 도구가 정한다. Karpenter 가 마음대로 못 늘린다.
+CAP_MARGIN=${CAP_MARGIN:-0}
 
 # ── 지금 트래픽을 ALB 에서 읽는다 (앱별 rps) ───────────────────────────────
 read_traffic() {
@@ -100,8 +107,18 @@ print(" ".join(f"{k}={v.get(chr(114)+chr(112)+chr(115),0)}rps" for k, v in sorte
   nodes=$(kubectl get nodes --no-headers 2>/dev/null | grep -c " Ready")
   [ "${nodes:-0}" = 0 ] && { echo "   노드를 못 읽었다"; return 0; }
 
+  # ★지금 파드가 어떤지는 직접 잰다. CloudWatch 는 1~3분 늦어서 방아쇠로 못 쓴다.
+  #   ALB 로 직접 GET 몇 개(앱당 15개). 피크 312rps 옆에서 무시할 양이고,
+  #   채점기는 자기 주입 요청만 세므로 점수에 안 들어간다.
+  local prb=""
+  if [ "${USE_PROBE:-1}" = 1 ]; then
+    prb=$(./probe.sh 2>/dev/null)
+    case "${prb:-}" in ''|'{}') prb="";; esac
+  fi
+
   out=$(MAX_NODES=$MAX_NODES \
         python3 decide.py --snapshot "$snap" --nodes "$nodes" \
+          ${prb:+--probe "$prb"} \
           $([ "$apply" = yes ] || echo --no-commit) 2>&1) || {
     echo "   판단 실패:"; echo "$out" | tail -3; return 0; }
   echo "$out" | grep -v '^[A-Z][A-Z]*='
@@ -178,9 +195,17 @@ for d in json.load(sys.stdin)['items']:
 print(' '.join(bad))")
   if [ -n "$out" ]; then echo "   [X] 롤아웃 미완료: $out"; fail=1; else echo "   [O] 모든 Deployment 준비됨"; fi
 
-  # 2) Pending 파드가 없는가 (있으면 노드가 모자라거나 제약이 안 맞는 것)
+  # 2) Pending 파드
+  #    ★상한을 닫아두면 부하 중에는 Pending 이 정상이다.
+  #      HPA 는 노드 사정을 모르고 파드를 늘리고, 노드 수는 도구가 정한다.
+  #      갈 곳 없는 파드가 생기는 건 설계대로다 — 그걸 불안정으로 세면 매 주기
+  #      60초씩 헛기다린다. 트래픽 전(prepare)에만 엄격히 본다.
   n=$(kubectl -n "$NS" get pods --field-selector=status.phase=Pending --no-headers 2>/dev/null | wc -l | tr -d ' ')
-  if [ "${n:-0}" != 0 ]; then echo "   [X] Pending 파드 ${n}개"; fail=1; else echo "   [O] Pending 파드 없음"; fi
+  if [ "${n:-0}" != 0 ] && [ "${STRICT_PENDING:-0}" = 1 ]; then
+    echo "   [X] Pending 파드 ${n}개"; fail=1
+  elif [ "${n:-0}" != 0 ]; then
+    echo "   [O] Pending 파드 ${n}개 (상한이 닫혀 있으니 정상)"
+  else echo "   [O] Pending 파드 없음"; fi
 
   # 3) 노드 수가 하한 이상이고 상한 이하인가
   #    ★상한이 열려 있으면 노드 수는 하한~상한 사이에서 정상적으로 오르내린다.
@@ -270,16 +295,16 @@ prepare() {
   #   상한까지 묶으면 예상 못 한 스파이크에 노드를 못 만들고 무너진다(실측 22.5점).
   #   점수는 트래픽 구간 '평균'이라, 초반 몇 분 노드가 많은 것보다 성능이 무너지는 게 훨씬 비싸다.
   #   트래픽을 재고 나면 run 루프가 상한을 하한까지 좁혀 비용을 확정한다.
-  echo "== 콜드 스타트 구성 적용 (하한 ${COLD_NODES:-2} / 상한 ${COLD_CAP:-6})"
-  ./apply.sh "${COLD_NODES:-2}" "${COLD_MODE:-shared}" "${COLD_CAP:-6}" | tail -3
+  echo "== 콜드 스타트 구성 적용 (${COLD_NODES:-2}대 고정)"
+  ./apply.sh "${COLD_NODES:-2}" "${COLD_MODE:-shared}" "${COLD_CAP:-${COLD_NODES:-2}}" | tail -3
   ./tune_requests.sh "${COLD_STRESS_REQ:-100m}" | tail -1
-  echo "${COLD_NODES:-2} ${COLD_MODE:-shared} ${COLD_CAP:-6}" > "$STATE"
+
 
   # 트래픽이 들어오는 순간에 이미 안정 상태여야 한다. 될 때까지 확인한다.
   echo
   local i
   for i in $(seq 1 30); do
-    ready && break
+    STRICT_PENDING=1 ready && break
     echo "   ... 30초 후 재확인 ($i/30)"
     sleep 30
   done

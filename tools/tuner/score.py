@@ -97,7 +97,10 @@ def ledger_add(led, dt_min, nodes, req, ok, under):
     led["minutes"] += dt_min
     led["node_minutes"] += nodes * dt_min
     for a in APPS:
-        led["req"][a] += req.get(a, 0.0)
+        # 없는 키는 '측정 못 함'이다. 0 으로 채우면 그 앱을 0점으로 세는 셈이 된다.
+        if a not in req:
+            continue
+        led["req"][a] += req[a]
         led["ok"][a] += ok.get(a, 0.0)
         led["under"][a] += under.get(a, 0.0)
     return led

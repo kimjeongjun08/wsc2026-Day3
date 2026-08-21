@@ -109,8 +109,7 @@ setup)
     set -- $BEST
     echo "   최적 구성: $1 노드 / stress=$2"
     # 상한은 하한보다 2대 높게 — 예상 못 한 스파이크를 Karpenter 가 흡수하도록
-    ./apply.sh "$1" "$2" "$(( $1 + 2 ))" | tail -3
-    echo "$1 $2 $(( $1 + 2 ))" > .autotune-state
+    ./apply.sh "$1" "$2" "$1" | tail -3
   else
     echo "   탐색이 결론을 못 냈다 — 콜드 스타트 구성을 유지한다 (하한 2 / 상한 6)"
   fi

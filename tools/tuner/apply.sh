@@ -85,6 +85,18 @@ else
   [ "$ISO" -le 1 ] && bx "kubectl -n $NS patch deploy stress --type=json -p='[{\"op\":\"remove\",\"path\":\"/spec/template/spec/topologySpreadConstraints\"}]' >/dev/null 2>&1 || true"
 fi
 
+# ★HPA 상한을 노드 수에 맞춘다.
+#   maxReplicas 20 은 노드가 몇 대든 파드를 20개까지 늘린다. 노드 2대(4 vCPU)에
+#   파드 20개를 얹으면 용량이 느는 게 아니라 큐와 문맥전환만 는다.
+#   실측: 세 앱 HPA 가 전부 20 에 붙어 파드 60개가 같은 코어를 나눠 썼다.
+#   노드당 3개면 t3.medium 2코어에 맞는다. HPA 패치는 롤아웃을 안 부른다(무료).
+HPA_MAX=$(( (DOMAINS>0 ? DOMAINS : 1) * ${HPA_PER_NODE:-3} ))
+[ "$HPA_MAX" -lt 2 ] && HPA_MAX=2
+bx "for h in user-hpa product-hpa; do
+  kubectl -n $NS patch hpa \$h -p '{\"spec\":{\"maxReplicas\":$HPA_MAX}}' >/dev/null 2>&1
+done"
+echo "   HPA 상한 user/product = $HPA_MAX (공유 ${DOMAINS}대 x ${HPA_PER_NODE:-3})"
+
 bx "kubectl patch nodepool apdev-pool --type=merge -p '{\"spec\":{\"limits\":{\"cpu\":\"$LIMIT\"}}}' >/dev/null
 kubectl patch nodepool apdev-stress-pool --type=merge -p '{\"spec\":{\"limits\":{\"cpu\":\"$STRESS_LIMIT\"}}}' >/dev/null
 echo '   apdev-pool='\$(kubectl get nodepool apdev-pool -o jsonpath='{.spec.limits.cpu}')' stress-pool='\$(kubectl get nodepool apdev-stress-pool -o jsonpath='{.spec.limits.cpu}')"

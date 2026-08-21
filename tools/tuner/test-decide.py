@@ -40,8 +40,8 @@ def ledger(minutes, avg_nodes, perf, req_per_min=3000):
 fails = []
 
 
-def run(name, led, sn, nodes, memory, want, contains=None):
-    d, why = decide.advise(led, sn, nodes, memory)
+def run(name, led, sn, nodes, memory, want, contains=None, probe=None):
+    d, why = decide.advise(led, sn, nodes, memory, probe)
     ok = (d == want) and (contains is None or any(contains in w for w in why))
     print(("  [O] " if ok else "  [X] ") + name + f"  → {d:+d}")
     for w in why:
@@ -95,7 +95,30 @@ run("목표선(90%)과 여유선(95%) 사이는 그대로 둔다 — 요요 방�
     ledger(40, 3, {"user": 95}),
     snap((9000, 0, MID), (9000, 0, CALM), (600, 0, SCALM)), 3, {}, 0, "유지")
 
-print("== 6. 트래픽이 커지면 증설 판정을 다시 연다 (peak1 에서 반증 → peak2)")
+print("== 6. 실측(probe)이 방아쇠, CloudWatch 는 원장")
+PB = {"user": {"pass": 40, "p50": .35, "p90": .82, "max": 1.2, "n": 15},
+      "product": {"pass": 100, "p50": .04, "p90": .09, "max": .2, "n": 15},
+      "stress": {"cpu_m": 1900, "cpu_pct": 95}}
+PG = {"user": {"pass": 100, "p50": .04, "p90": .08, "max": .15, "n": 15},
+      "product": {"pass": 100, "p50": .03, "p90": .07, "max": .12, "n": 15},
+      "stress": {"cpu_m": 400, "cpu_pct": 20}}
+run("CloudWatch 는 아직 좋아 보여도 실측이 나쁘면 대응한다",
+    ledger(30, 2, {"user": 99}), snap((9000, 0, CALM), (9000, 0, CALM), (600, 0, SCALM)),
+    2, {}, +1, "목표 미달", probe=PB)
+run("실측이 멀쩡하면 CloudWatch 가 나빠도 안 산다 (이미 지나간 구간)",
+    ledger(30, 3, {"user": 99}), snap((9000, 0, BAD), (9000, 0, CALM), (600, 0, SGOOD)),
+    3, {}, 0, None, probe=PG)
+PM = {"user": {"pass": 85, "p50": .12, "p90": .21, "max": .4, "n": 15},
+      "product": {"pass": 100, "p50": .04, "p90": .09, "max": .2, "n": 15},
+      "stress": {"cpu_m": 1500, "cpu_pct": 75}}
+run("애매하면(나쁘지도 여유롭지도 않다) 그대로 둔다 — 요요 방지",
+    ledger(60, 4, {"user": 97}), snap((300, 0, CALM), (300, 0, CALM), (30, 0, SCALM)),
+    4, {}, 0, "유지", probe=PM)
+run("둘 다 여유 → 축소",
+    ledger(60, 4, {"user": 97}), snap((300, 0, CALM), (300, 0, CALM), (30, 0, SCALM)),
+    4, {}, -1, "축소", probe=PG)
+
+print("== 7. 트래픽이 커지면 증설 판정을 다시 연다 (peak1 에서 반증 → peak2)")
 m = {"escalation_pays": False, "no_escalate_rps": 60.0}
 run("peak2 로 트래픽 2배 → 다시 시험", ledger(60, 3, {"user": 95}),
     snap((9000, 0, BAD), (9000, 0, CALM), (600, 0, SCALM), win=45.0), 3, m, +1, "다시 연다")
@@ -103,7 +126,7 @@ m = {"escalation_pays": False, "no_escalate_rps": 400.0}
 run("트래픽 그대로면 판정 유지", ledger(60, 3, {"user": 95}),
     snap((9000, 0, BAD), (9000, 0, CALM), (600, 0, SCALM)), 3, m, 0, "이미 확인")
 
-print("== 7. ★회차 길이가 달라도 같은 판단이 나와야 한다")
+print("== 8. ★회차 길이가 달라도 같은 판단이 나와야 한다")
 same = True
 for label, mins, rpm in (("15분 회차 m5", 5, 1300), ("120분 회차 m75", 75, 3000),
                          ("120분 회차 m115", 115, 3000)):
@@ -122,7 +145,7 @@ if same:
 else:
     fails.append("회차 길이 독립성")
 
-print("== 8. 표본이 적은 앱은 판단에서 뺀다")
+print("== 9. 표본이 적은 앱은 판단에서 뺀다")
 d, why = decide.advise(ledger(3, 2, {"user": 99}),
                        snap((12, 0, BAD), (12, 0, BAD), (2, 0, SBAD)), 2, {})
 ok = d == 0
@@ -131,7 +154,7 @@ print(("  [O] " if ok else "  [X] ") + "조용한 구간의 몇 건짜리 표본
 for w in why: print("        " + w)
 if not ok: fails.append("표본 가드")
 
-print("== 9. 통과율 추정이 실측과 맞는가")
+print("== 10. 통과율 추정이 실측과 맞는가")
 est = score.perf_from_percentiles(BAD, 0.200)
 ok = 40 <= est <= 60
 print(("  [O] " if ok else "  [X] ") + f"실측 peak2 user 분포 → 추정 {est:.1f}% (실제 채점 48.56%)")
