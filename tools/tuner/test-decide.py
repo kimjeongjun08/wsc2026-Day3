@@ -17,7 +17,7 @@ def snap(user=(0, 0, {}), product=(0, 0, {}), stress=(0, 0, {}), win=180.0):
 
 CALM  = {10: .01, 30: .02, 50: .03, 70: .05, 80: .06, 90: .09, 95: .11, 99: .16}  # 추정 99%
 GOOD  = {10: .02, 30: .03, 50: .05, 70: .08, 80: .10, 90: .14, 95: .18, 99: .30}  # 추정 96%
-MID   = {10: .03, 30: .05, 50: .07, 70: .10, 80: .13, 90: .17, 95: .22, 99: .55}  # 추정 93%
+MID   = {10: .03, 30: .05, 50: .08, 70: .12, 80: .15, 90: .19, 95: .26, 99: .70}  # 추정 91%
 EDGE  = {10: .05, 30: .09, 50: .13, 70: .17, 80: .19, 90: .24, 95: .33, 99: .60}
 BAD   = {10: .09, 30: .15, 50: .22, 70: .38, 80: .52, 90: .78, 95: .86, 99: 1.4}   # 실측 peak2 user
 SCALM = {10: .05, 30: .08, 50: .12, 70: .18, 80: .22, 90: .30, 95: .40, 99: .70}  # 추정 99%
@@ -81,6 +81,22 @@ run("누적 31% + 지금도 나쁨 → '증설 무효' 판정을 무시하고 �
     ledger(14, 4, {"user": 31, "product": 90, "stress": 90}),
     snap((9000, 0, BAD), (9000, 0, CALM), (600, 0, SGOOD)), 4, m, +1, "게이트", probe=PBAD2)
 
+print("== 2c. ★실측 구멍: stress 를 CPU 로만 보면 게이트를 놓친다")
+# 2026-08-21 2회차: stress 누적 26% → 비용 12점이 통째로 0. 그런데 전용 노드 CPU 는
+# 문턱(88%) 아래라 "지금은 괜찮다"로 읽혔고 게이트 방어가 발동하지 않았다.
+# CPU 는 포화의 신호지 SLA 준수의 신호가 아니다. 채점되는 값은 통과율이다.
+P_CPU_OK = {"user": {"pass": 100, "p50": .04, "p90": .08, "max": .15, "n": 15},
+            "product": {"pass": 100, "p50": .03, "p90": .07, "max": .12, "n": 15},
+            "stress": {"cpu_m": 1400, "cpu_pct": 70}}   # 포화 아님
+run("stress CPU 70% 인데 통과율은 바닥 → 게이트 방어가 걸려야 한다",
+    ledger(14, 3, {"user": 90, "product": 90, "stress": 26}),
+    snap((9000, 0, CALM), (9000, 0, CALM), (600, 0, SBAD)), 3, {}, +1, "게이트",
+    probe=P_CPU_OK)
+run("stress 도 통과율이 멀쩡하면 건드리지 않는다",
+    ledger(14, 3, {"user": 90, "product": 90, "stress": 95}),
+    snap((9000, 0, CALM), (9000, 0, CALM), (600, 0, SCALM)), 3, {}, -1, "축소",
+    probe=P_CPU_OK)
+
 print("== 3. 증설이 효과 없다는 게 드러나면 그만둔다 (대조군의 함정)")
 led = ledger(63, 4, {"user": 48})
 m = {"last_upsize": {"nodes": 4, "minute": 60, "perf": {"user": 48.0, "product": 99.0, "stress": 72.0}}}
@@ -108,7 +124,7 @@ run("전 앱 여유 → 한 대 반납", ledger(85, 5, {"user": 97}),
     snap((300, 0, CALM), (300, 0, CALM), (30, 0, SCALM)), 5, {}, -1, "축소")
 run("바닥 2대 아래로는 안 내린다", ledger(20, 2, {"user": 99}),
     snap((300, 0, CALM), (300, 0, CALM), (30, 0, SCALM)), 2, {}, 0, "유지")
-run("목표선(90%)과 여유선(95%) 사이는 그대로 둔다 — 요요 방지",
+run("증설선(90%)과 축소선(92%) 사이는 그대로 둔다 — 요요 방지",
     ledger(40, 3, {"user": 95}),
     snap((9000, 0, MID), (9000, 0, CALM), (600, 0, SCALM)), 3, {}, 0, "유지")
 
@@ -171,7 +187,57 @@ print(("  [O] " if ok else "  [X] ") + "조용한 구간의 몇 건짜리 표본
 for w in why: print("        " + w)
 if not ok: fails.append("표본 가드")
 
-print("== 10. 통과율 추정이 실측과 맞는가")
+print("== 10. ★회차 재생 — 실측 곡선을 통째로 돌려 결과를 본다")
+# 2026-08-21 1회차의 실제 흐름을 그대로 재생한다. 그때 도구는 노드를 8대까지
+# 밀어올리고 계곡을 8대로 완주했다. 고친 뒤에는 그러면 안 된다.
+def replay(name, phases, start_nodes=2, floor=2, cap=8):
+    led = score.blank_ledger(); mem = {}; nodes = start_nodes; hist = []
+    for (mins, rps, pass_pct, scpu) in phases:
+        for _ in range(mins):
+            pr = {"user": {"pass": pass_pct, "p50": .05, "p90": .1 if pass_pct > 80 else .9,
+                           "max": .2, "n": 15},
+                  "product": {"pass": min(100, pass_pct + 10), "p50": .04, "p90": .08,
+                              "max": .15, "n": 15},
+                  "stress": {"cpu_m": int(scpu * 20), "cpu_pct": scpu}}
+            per_app = max(1.0, rps * 60 / 3.0)
+            sn = {a: {"req": per_app, "e5": 0.0, "rps": rps / 3.0,
+                      "p": {"50": .05, "90": .1, "99": .3}} for a in score.APPS}
+            perf, avail, _ = decide.estimate(sn)
+            # 원장에는 실제 통과율을 넣는다(CloudWatch 는 느리지만 값은 맞다)
+            req = {a: per_app for a in score.APPS}
+            score.ledger_add(led, 1.0, nodes, req,
+                             {a: per_app for a in score.APPS},
+                             {a: per_app * pass_pct / 100.0 for a in score.APPS})
+            v = decide.review_upsize(led, mem, {a: float(pass_pct) for a in score.APPS})
+            d, _w = decide.advise(led, sn, nodes, mem, pr)
+            if d > 0:
+                mem["last_upsize"] = {"nodes": nodes, "minute": led["minutes"],
+                                      "rps": rps,
+                                      "perf": {a: float(pass_pct) for a in score.APPS}}
+            nodes = max(floor, min(cap, nodes + d))
+            hist.append(nodes)
+    return hist, led
+
+# (분, 총rps, 실측통과율%, stressCPU%)
+LADDER = [(4, 9, 100, 5), (10, 312, 45, 95), (5, 18, 100, 5), (6, 78, 95, 40)]
+hist, led = replay("ladder", LADDER)
+base, peak, valley, hook = hist[:4], hist[4:14], hist[14:19], hist[19:]
+print("   노드 추이  기준%s  피크%s  계곡%s  훅%s" % (base, peak, valley, hook))
+okv = max(valley) <= 3
+okp = max(peak) >= 3
+print(("  [O] " if okv else "  [X] ") + "계곡(18rps)에서 노드를 반납한다 — 최대 %d대" % max(valley))
+print(("  [O] " if okp else "  [X] ") + "피크에서는 늘린다 — 최대 %d대" % max(peak))
+if not okv: fails.append("재생: 계곡 축소")
+if not okp: fails.append("재생: 피크 증설")
+
+DRIFT = [(6, 9, 100, 5), (3, 78, 92, 45), (11, 10, 100, 5)]
+hist2, _ = replay("drift", DRIFT)
+okd = hist2[-1] == 2 and sum(hist2) / len(hist2) <= 2.6
+print(("  [O] " if okd else "  [X] ") + "한가한 회차는 2대로 완주 — 평균 %.2f대, 끝 %d대"
+      % (sum(hist2) / len(hist2), hist2[-1]))
+if not okd: fails.append("재생: drift 비용")
+
+print("== 11. 통과율 추정이 실측과 맞는가")
 est = score.perf_from_percentiles(BAD, 0.200)
 ok = 40 <= est <= 60
 print(("  [O] " if ok else "  [X] ") + f"실측 peak2 user 분포 → 추정 {est:.1f}% (실제 채점 48.56%)")

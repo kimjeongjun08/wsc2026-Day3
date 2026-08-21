@@ -21,8 +21,21 @@ export AWS_CLI_CONNECT_TIMEOUT=${AWS_CLI_CONNECT_TIMEOUT:-5}
 export AWS_CLI_READ_TIMEOUT=${AWS_CLI_READ_TIMEOUT:-15}
 
 # 겉옷: 어떤 명령이든 시간 상한을 씌운다. timeout 이 없는 환경도 있으므로 확인한다.
+# ★상한이 환경 따라 사라지면 안 된다.
+#   macOS 에는 timeout 이 없다(coreutils 미설치 시). 예전 폴백은 '그냥 실행'이라
+#   맥에서는 상한이 통째로 없어졌다 — 같은 도구가 환경 따라 다르게 도는 것이다.
+#   perl 로 같은 동작을 만든다. perl 은 macOS·WSL 양쪽에 기본 설치돼 있다.
 if command -v timeout >/dev/null 2>&1; then
   cap() { timeout "${1}s" "${@:2}"; }
+elif command -v gtimeout >/dev/null 2>&1; then
+  cap() { gtimeout "${1}s" "${@:2}"; }
+elif command -v perl >/dev/null 2>&1; then
+  cap() { local t=$1; shift; perl -e '
+    my $t = shift;
+    my $pid = fork();
+    if ($pid == 0) { exec @ARGV or exit 127; }
+    local $SIG{ALRM} = sub { kill "TERM", $pid; sleep 1; kill "KILL", $pid; exit 124; };
+    alarm $t; waitpid($pid, 0); alarm 0; exit($? >> 8);' "$t" "$@"; }
 else
   cap() { shift; "$@"; }
 fi

@@ -72,6 +72,14 @@ for app in user product; do
   else ok "$app 파드 ${p}개 / 노드 ${d}대"; fi
 done
 
+echo "== 4b. 다른 튜너가 이 클러스터를 잡고 있지 않나  ← 둘이 싸우면 회차가 버려진다"
+CUR=$(kubectl -n "$NS" get cm tuner-lock -o jsonpath='{.data.owner}{" "}{.data.ts}' 2>/dev/null)
+if [ -n "${CUR:-}" ]; then
+  set -- $CUR; AGE=$(( $(date +%s) - ${2:-0} ))
+  if [ "$AGE" -lt 180 ]; then hmm "튜너가 이미 돌고 있다: $1 (${AGE}초 전 갱신)"
+  else ok "옛 잠금만 남아 있다: $1 (${AGE}초 전) — 새로 잡으면 된다"; fi
+else ok "잠금 없음"; fi
+
 echo "== 5. 노드 수와 상한이 도구 상태와 맞나"
 ST=$(cat "${STATE:-.autotune-state}" 2>/dev/null || echo "")
 T=$(awk '{print $1}' <<<"$ST"); M=$(awk '{print $2}' <<<"$ST"); C=$(awk '{print $3}' <<<"$ST")

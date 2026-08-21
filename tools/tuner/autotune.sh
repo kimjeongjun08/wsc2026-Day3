@@ -99,10 +99,7 @@ once() {
   local delta bad worst out
   snap=$(WIN_MIN=${WIN_MIN:-3} ./alb_snapshot.sh 2>/dev/null) || {
     echo "[$(date +%H:%M:%S)] ALB 지표를 못 읽었다 — 이번 주기는 건너뛴다"; return 0; }
-  echo "[$(date +%H:%M:%S)] $(SNAP="$snap" python3 -c '
-import json, os
-d = json.loads(os.environ["SNAP"])
-print(" ".join(f"{k}={v.get(chr(114)+chr(112)+chr(115),0)}rps" for k, v in sorted(d.items())))' 2>/dev/null)"
+  echo "[$(date +%H:%M:%S)] $(SNAP="$snap" python3 rpsline.py)"
 
   nodes=$(cap 15 kubectl get nodes --no-headers 2>/dev/null | grep -c " Ready")
   [ "${nodes:-0}" = 0 ] && { echo "   노드를 못 읽었다"; return 0; }
@@ -173,7 +170,11 @@ print(" ".join(f"{k}={v.get(chr(114)+chr(112)+chr(115),0)}rps" for k, v in sorte
   [ "$want_iso" = 1 ] && new_mode=iso
   [ "$want_iso" -gt 1 ] && new_mode="iso$want_iso"
   echo "   $cur_n/$cur_m → $new_n/$new_mode (공유 $want_shared + 전용 $want_iso, 상한 $cap)"
-  ./apply.sh "$new_n" "$new_mode" "$cap" | tail -2
+  # ★수렴 대기가 운영 루프를 막지 않게 상한을 씌운다.
+  #   apply.sh 는 노드가 뜰 때까지 최대 800초를 기다린다. 그동안 루프는 아무 판단도
+  #   못 한다 — 피크 한복판에서 13분을 눈감는 셈이다. 실측 3회차에서 실제로 그랬다.
+  #   시간이 넘으면 그냥 다음 주기로 간다. 노드는 알아서 계속 뜬다.
+  cap "${APPLY_TIMEOUT:-150}" ./apply.sh "$new_n" "$new_mode" "$cap" | tail -2
   return 2
 }
 
@@ -316,6 +317,32 @@ case "${1:-run}" in
   show)    once no ;;
   ready)   ready ;;
   run)
+    # ★같은 클러스터를 두 튜너가 조작하면 서로의 결정을 덮어쓴다.
+    #   실측(2026-08-21 3회차): 다른 PC 의 감독 루프가 살아 있는 줄 모르고 회차를
+    #   시작했다. 한쪽은 3대를 지시했는데 노드는 6대가 됐고, 상태 파일과 클러스터가
+    #   따로 놀아 로그만 봐서는 원인을 알 수 없었다. 회차 하나를 통째로 버렸다.
+    #   클러스터 안에 임차권(lease)을 두고, 남이 살아 있으면 시작하지 않는다.
+    LOCK_ID="${LOCK_ID:-$(hostname)-$$}"
+    lock_take() {
+      local cur age
+      cur=$(kubectl -n "$NS" get cm tuner-lock -o jsonpath='{.data.owner}{" "}{.data.ts}' 2>/dev/null)
+      if [ -n "${cur:-}" ]; then
+        set -- $cur
+        age=$(( $(date +%s) - ${2:-0} ))
+        if [ "$1" != "$LOCK_ID" ] && [ "$age" -lt "${LOCK_TTL:-180}" ]; then
+          echo "!! 다른 튜너가 이미 이 클러스터를 잡고 있다: $1 (${age}초 전 갱신)" >&2
+          echo "   그쪽을 먼저 끄거나, 정말 넘겨받으려면:" >&2
+          echo "     kubectl -n $NS delete cm tuner-lock" >&2
+          return 1
+        fi
+      fi
+      kubectl -n "$NS" create cm tuner-lock         --from-literal=owner="$LOCK_ID" --from-literal=ts="$(date +%s)"         --dry-run=client -o yaml 2>/dev/null | kubectl apply -f - >/dev/null 2>&1
+      return 0
+    }
+    lock_beat() {
+      kubectl -n "$NS" create cm tuner-lock         --from-literal=owner="$LOCK_ID" --from-literal=ts="$(date +%s)"         --dry-run=client -o yaml 2>/dev/null | kubectl apply -f - >/dev/null 2>&1
+    }
+    lock_take || exit 3
     # ★죽으면 왜 죽었는지 남긴다.
     #   실측: 긴 회차에서 이 루프가 76분 만에 조용히 끝났다. 로그 마지막 줄은
     #   정상적인 트래픽 라인이었고 에러가 없었다. 원인을 못 찾은 채 감독 루프로
@@ -325,6 +352,7 @@ case "${1:-run}" in
     trap 'rc=$?; echo "[$(date +%H:%M:%S)] 루프 종료 rc=$rc (line $LINENO)" >&2' EXIT
     echo "운영 루프 시작 (${INTERVAL}초 주기) pid=$$"
     while :; do
+      lock_beat
       once yes; rc=$?
       # ★과부하 대응 직후(rc=2)에는 안정화를 기다리지 않는다.
       #   사다리는 여러 단계를 밟아야 하는데, 노드가 뜨는 중이라 ready 가 실패하면

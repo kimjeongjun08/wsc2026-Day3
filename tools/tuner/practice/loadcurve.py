@@ -1,0 +1,256 @@
+#!/usr/bin/env python3
+"""loadcurve.py — 채점기 없이 공식 곡선을 그대로 재현하고 40점으로 채점한다.
+
+왜 필요한가:
+  · 대회장에는 채점 서버가 없다. 도구가 맞는지 확인할 방법이 우리 손에 있어야 한다.
+  · 연습 환경의 채점기(사내망)가 끊기면 검증이 통째로 멈춘다. 실제로 멈췄다.
+  · 후배가 집에서 연습할 때도 채점기를 못 쓴다.
+
+무엇을 하는가:
+  주입기와 같은 비율·같은 경로로 요청을 쏘고, 클라이언트에서 지연을 재서
+  채점표(score.py) 그대로 점수를 매긴다. 노드 수는 kubectl 로 분마다 센다.
+
+★POST 는 DB 에 행을 만든다. 공식 비율에 POST 가 들어 있으므로 그대로 쓰지만
+  (그래야 대표성이 있다), 필요 이상으로 돌리지 마라. 과제지가 경계하는 부분이다.
+"""
+import argparse, asyncio, json, os, random, string, subprocess, sys, time
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import score
+
+# 채점기 meta 의 injection_rates 를 그대로 옮긴 것 (2026-08-21 확인).
+RATES = {
+    "user_post":    {"base": 2,   "peak1": 22,  "peak2": 65},
+    "user_get":     {"base": 2,   "peak1": 22,  "peak2": 65},
+    "product_get":  {"base": 3,   "peak1": 45,  "peak2": 140},
+    "product_post": {"base": 0.3, "peak1": 3,   "peak2": 5.5},
+    "stress_post":  {"base": 0.2, "peak1": 2.5, "peak2": 7},
+    "image_get":    {"base": 0.6, "peak1": 7,   "peak2": 22},
+    "abnormal":     {"base": 1,   "peak1": 2,   "peak2": 5},
+}
+# ★채점기의 CSV_KIND_OF 와 같아야 한다.
+#   image_get 은 product 가 아니라 'image' 버킷이고, 그건 '비정상 요청 처리' 4점의
+#   image_download 쪽으로 간다. 이걸 product 에 섞으면 404 가 product 성공률을
+#   끌어내려서(실측: 67%) 도구가 멀쩡한데도 못한 것처럼 보인다.
+UI = {"user_post": "user", "user_get": "user",
+      "product_get": "product", "product_post": "product",
+      "stress_post": "stress",
+      "image_get": "image",        # → image_download (채점 4점 항목)
+      "abnormal": "abnormal"}      # → exception_handling (2xx/4xx 둘 다 성공)
+
+SCENARIOS = {
+    "ladder":   [(4, "base", 1.0), (14, "peak2", 1.0), (19, "base", 2.0), (25, "peak1", 0.75)],
+    "practice": [(5, "base", 1.0), (15, "peak1", 1.0)],
+    "ambush":   [(2, "base", 1.0), (12, "peak2", 1.0)],
+    "drift":    [(6, "base", 1.0), (9, "peak1", 1.0), (20, "base", 1.1)],
+    "trap":     [(3, "base", 1.0), (11, "peak2", 1.0), (17, "base", 1.0), (22, "peak2", 0.8)],
+    "smoke":    [(1, "base", 1.0)],          # 1분. 배관이 뚫렸는지만 본다
+}
+
+
+def rnd(n=16):
+    return "".join(random.choices("0123456789abcdef", k=n))
+
+
+def build(kind, seeded):
+    rid, uu = rnd(32), rnd(32)
+    if kind == "user_get":
+        em = random.choice(seeded["emails"]) if seeded["emails"] else f"u{rnd(10)}@k6.local"
+        return "GET", f"/v1/user?email={em}&requestid={rid}&uuid={uu}", None
+    if kind == "user_post":
+        em = f"u{rnd(10)}@k6.local"
+        return "POST", "/v1/user", json.dumps(
+            {"requestid": rid, "uuid": uu, "username": "u" + rnd(6), "email": em})
+    if kind == "product_get":
+        pid = random.choice(seeded["pids"]) if seeded["pids"] else f"p-{rnd(10)}"
+        return "GET", f"/v1/product?id={pid}&requestid={rid}&uuid={uu}", None
+    if kind == "product_post":
+        pid = f"p-{rnd(10)}"
+        return "POST", "/v1/product", json.dumps(
+            {"requestid": rid, "uuid": uu, "id": pid, "name": "prod " + pid,
+             "price": random.randint(100, 9999)})
+    if kind == "stress_post":
+        return "POST", "/v1/stress", json.dumps(
+            {"requestid": rid, "uuid": uu, "length": random.randint(50, 200)})
+    if kind == "image_get":
+        return "GET", f"/images/none/{rnd(8)}.jpg", None
+    return "GET", f"/v1/user?email=' OR 1=1--&requestid={rid}&uuid={uu}", None
+
+
+class Runner:
+    def __init__(self, endpoint, sched, mult, out):
+        self.ep = endpoint.rstrip("/")
+        self.sched = sched
+        self.mult = mult
+        self.out = out
+        self.seeded = {"emails": [], "pids": []}
+        self.stat = {}          # 분 -> app -> [n, ok, under]
+        self.inflight = 0
+        self.max_inflight = 2500
+
+    def bucket(self, minute, app):
+        return self.stat.setdefault(minute, {}).setdefault(app, [0, 0, 0])
+
+    async def fire(self, sess, kind, minute):
+        import aiohttp
+        method, path, body = build(kind, self.seeded)
+        app = UI[kind]
+        sla = score.SLA_S.get(app, 1.0)
+        hdr = {"Content-Type": "application/json"} if body else {}
+        t0 = time.monotonic()
+        self.inflight += 1
+        try:
+            async with sess.request(method, self.ep + path, data=body, headers=hdr,
+                                    timeout=aiohttp.ClientTimeout(total=10)) as r:
+                await r.read()
+                dt = time.monotonic() - t0
+                b = self.bucket(minute, app)
+                b[0] += 1
+                # 채점 규칙: 2xx 만 성공, 비정상 요청은 4xx 도 성공으로 친다
+                good = 200 <= r.status < 300 or (kind == "abnormal" and 400 <= r.status < 500)
+                if good:
+                    b[1] += 1
+                    if dt <= sla:
+                        b[2] += 1
+                    if kind == "user_post":
+                        self.seeded["emails"].append(json.loads(body)["email"])
+                        del self.seeded["emails"][:-500]
+                    if kind == "product_post":
+                        self.seeded["pids"].append(json.loads(body)["id"])
+                        del self.seeded["pids"][:-500]
+        except Exception:
+            b = self.bucket(minute, app)
+            b[0] += 1
+        finally:
+            self.inflight -= 1
+
+    def rates_at(self, minute):
+        lvl, sc = "base", 1.0
+        for end, level, scale in self.sched:
+            if minute < end:
+                lvl, sc = level, scale
+                break
+        else:
+            return None
+        return {k: v[lvl] * sc * self.mult for k, v in RATES.items()}
+
+    async def run(self):
+        import aiohttp
+        total_min = self.sched[-1][0]
+        conn = aiohttp.TCPConnector(limit=0, ttl_dns_cache=300)
+        async with aiohttp.ClientSession(connector=conn) as sess:
+            t_start = time.monotonic()
+            tasks = set()
+            while True:
+                now = time.monotonic() - t_start
+                minute = int(now // 60)
+                if minute >= total_min:
+                    break
+                r = self.rates_at(minute)
+                # 1초치를 뿌린다
+                sec_end = t_start + (int(now) + 1)
+                for kind, rps in r.items():
+                    n = int(rps) + (1 if random.random() < (rps % 1) else 0)
+                    for _ in range(n):
+                        if self.inflight >= self.max_inflight:
+                            break
+                        t = asyncio.create_task(self.fire(sess, kind, minute))
+                        tasks.add(t)
+                        t.add_done_callback(tasks.discard)
+                self.report(minute)
+                sl = sec_end - time.monotonic()
+                if sl > 0:
+                    await asyncio.sleep(sl)
+            if tasks:
+                await asyncio.wait(tasks, timeout=15)
+        # ★마지막 분의 결과까지 반드시 파일에 남긴다.
+        #   예전엔 report() 안에서만 썼는데, 그건 '분이 바뀔 때' 호출된다.
+        #   마지막 분은 바뀌는 순간이 없어서 통째로 빠졌고, 채점이 0건으로 나왔다.
+        self.flush()
+
+    def flush(self):
+        json.dump({"stat": self.stat, "nodes": getattr(self, "nodes", {})},
+                  open(self.out, "w"))
+
+    def report(self, minute):
+        if getattr(self, "_last", None) == minute:
+            return
+        self._last = minute
+        nodes = node_count()
+        self.nodes = getattr(self, "nodes", {})
+        self.nodes[minute] = nodes
+        s = self.stat.get(minute - 1, {})
+        u = s.get("user", [0, 0, 0])
+        print(f"  m{minute:<3} 노드 {nodes}대  user n={u[0]:<6} 2xx={u[1]:<6} "
+              f"SLA통과={100*u[2]/u[0] if u[0] else 0:.0f}%", flush=True)
+        self.flush()
+
+
+def node_count():
+    try:
+        o = subprocess.run(["kubectl", "get", "nodes", "--no-headers"],
+                           capture_output=True, text=True, timeout=15).stdout
+        return sum(1 for l in o.splitlines() if " Ready" in l)
+    except Exception:
+        return 0
+
+
+def grade(path):
+    d = json.load(open(path))
+    stat, nodes = d["stat"], d["nodes"]
+    tot = {}
+    for m, apps in stat.items():
+        for a, v in apps.items():
+            t = tot.setdefault(a, [0, 0, 0])
+            for i in range(3):
+                t[i] += v[i]
+    for a in score.APPS:
+        tot.setdefault(a, [0, 0, 0])
+    perf = {a: (100.0 * tot[a][2] / tot[a][0] if tot[a][0] else None) for a in score.APPS}
+    avail = {a: (100.0 * tot[a][1] / tot[a][0] if tot[a][0] else None) for a in score.APPS}
+    ns = [v for v in nodes.values() if v]
+    avg = sum(ns) / len(ns) if ns else 2.0
+    # 비정상 요청 처리 4점 = image_download 2 + exception_handling 2
+    def pct(t):
+        return (100.0 * t[1] / t[0]) if t[0] else None
+    img, abn = tot.get("image", [0, 0, 0]), tot.get("abnormal", [0, 0, 0])
+    # image_download 는 여기서 재지 않는다.
+    #   채점기는 image_post(멀티파트 PUT)로 상품에 이미지를 붙인 뒤 그걸 내려받는다.
+    #   우리는 업로드를 안 하므로 항상 404 다 — 도구가 어쩔 수 있는 항목이 아니고,
+    #   인프라 튜닝과도 무관하다. 만점으로 두고 넘어간다(로그에는 실측을 남긴다).
+    ab = 2.0 + (score.tier_high(pct(abn), score.AVAIL_TIERS[:4]) if abn[0] else 2.0)
+    s = score.total(perf, avail, avg, abnormal=round(ab, 1))
+    print("\n== 채점 (score.py, 채점표 그대로)")
+    if img[0] or abn[0]:
+        print(f"  image    성공률 {pct(img) or 0:6.2f}% ({img[0]}건)   "
+              f"abnormal 성공률 {pct(abn) or 0:6.2f}% ({abn[0]}건)")
+    for a in score.APPS:
+        print(f"  {a:8} 성공률 {avail[a] or 0:6.2f}%   SLA통과 {perf[a] or 0:6.2f}%   "
+              f"({tot[a][0]}건)")
+    print(f"  분 평균 노드 {avg:.2f}대 → 비용비 {avg/2:.2f}")
+    print(f"  비정상 {s['abnormal']:.1f}/4  고가용성 {s['availability']:.1f}/12  "
+          f"성능 {s['performance']:.1f}/12  비용 {s['cost']:.1f}/12")
+    print(f"  → {s['total']:.1f}/40" + ("   ★게이트(통과율 30% 미만)" if s["gated"] else ""))
+    return s
+
+
+if __name__ == "__main__":
+    ap = argparse.ArgumentParser()
+    ap.add_argument("scenario", choices=list(SCENARIOS) + ["grade"])
+    ap.add_argument("--endpoint", default=os.environ.get("ENDPOINT", ""))
+    ap.add_argument("--mult", type=float, default=1.0)
+    ap.add_argument("--out", default="/tmp/loadcurve.json")
+    a = ap.parse_args()
+    if a.scenario == "grade":
+        grade(a.out); sys.exit(0)
+    if not a.endpoint:
+        print("ENDPOINT 를 넘겨라", file=sys.stderr); sys.exit(1)
+    sched = SCENARIOS[a.scenario]
+    print(f"== {a.scenario} x{a.mult}  ({sched[-1][0]}분)  → {a.endpoint}")
+    prev = 0
+    for end, lvl, sc in sched:
+        tot = sum(v[lvl] for v in RATES.values()) * sc * a.mult
+        print(f"   {prev}-{end}분  {lvl} x{sc}  = {tot:.0f} rps")
+        prev = end
+    r = Runner(a.endpoint, sched, a.mult, a.out)
+    asyncio.run(r.run())
+    grade(a.out)

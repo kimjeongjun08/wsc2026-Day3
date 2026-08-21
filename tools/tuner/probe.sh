@@ -59,8 +59,11 @@ build_args() {  # $1=앱  → "-o /dev/null <url>" 를 N 번
 }
 
 times_for() {
-  local args
-  mapfile -t args < <(build_args "$1")
+  # ★mapfile 을 쓰지 않는다. bash 4 부터 있는 빌트인인데 macOS 기본 bash 는 3.2 다.
+  #   없으면 조용히 빈 배열이 되고, probe 가 "결과 없음"을 낸다 — 방아쇠가 죽는다.
+  #   대회 PC(WSL)는 bash 5 라 거기선 돌지만, 도구가 환경 따라 조용히 달라지면 안 된다.
+  local args=() line
+  while IFS= read -r line; do args+=("$line"); done < <(build_args "$1")
   [ "${#args[@]}" = 0 ] && return 1
   curl -s -m "$TMO" -w '%{time_total}\n' "${args[@]}" 2>/dev/null
 }

@@ -44,7 +44,13 @@ GATE_DANGER = float(os.environ.get("GATE_DANGER", 40))  # 누적이 이 밑이�
 #   90 에서 늘리고 90 에서 줄이면 경계에서 노드가 왔다갔다 하고, 그때마다 롤아웃이
 #   돌아 가용성이 깎인다. 늘리는 선(90)과 줄이는 선(96)을 벌려 놓는다.
 TARGET_PERF   = float(os.environ.get("TARGET_PERF", 90))
-SCALE_IN_PERF = float(os.environ.get("SCALE_IN_PERF", 95))
+# ★축소 문턱은 92 다. 95 가 아니다.
+#   백분위는 p99 까지만 읽는다. 그래서 p99 가 SLA 를 조금만 넘으면 추정 통과율이
+#   94.5% 근처에서 천장을 친다 — 아무리 한가해도 95 에 영원히 못 닿는다.
+#   실측 재생에서 이것 때문에 18rps 계곡에서도 노드가 3대에 붙어 안 내려왔다.
+#   채점 tier 는 90 이다. 94.5% 면 이미 만점 구간이고 축소해도 되는 상황이다.
+#   90(증설선)과 92(축소선) 사이 간격이 요요를 막는 히스테리시스다.
+SCALE_IN_PERF = float(os.environ.get("SCALE_IN_PERF", 92))
 # 실측 표본은 15개뿐이라 오차가 ±15%p 쯤 된다. 그래서 판정선을 크게 벌린다.
 #   PROBE_BAD  : 이 밑이면 잡음으로 설명이 안 된다 → 지금 나쁘다
 #   PROBE_OK   : 이 위여야 축소를 허용한다
@@ -109,12 +115,32 @@ def probe_view(probe):
     return bad, ok, ", ".join(shots)
 
 
+# probe 로 직접 재는 앱. stress 는 요청 하나가 코어를 통째로 먹어서 못 쏜다.
+PROBED = ("user", "product")
+
+
 def below_now(perf, live, p_bad, probe):
-    """지금 목표(90%)를 못 내고 있는 앱.
-    실측이 있으면 실측이 정한다 — CloudWatch 는 몇 분 전 이야기다."""
+    """지금 목표(90%)를 못 내고 있는 앱. 앱마다 '가장 좋은 신호'로 판정한다.
+
+    ★stress 를 CPU 로만 보면 안 된다.
+      실측(2026-08-21 2회차): stress 누적 통과율이 26% 였다. 게이트(30%)를 밑돌아
+      비용 12점이 통째로 0 이 됐다. 그런데 전용 노드의 CPU 는 문턱(88%) 아래라
+      "지금은 괜찮다"로 읽혔고, 그래서 게이트 방어가 발동하지 않았다.
+      CPU 는 포화의 신호지 SLA 준수의 신호가 아니다. 70% 에서도 큐가 쌓이면
+      요청은 1초를 넘긴다. 채점되는 값은 통과율이지 CPU 가 아니다.
+      그래서 probe 로 못 재는 앱(stress)은 CloudWatch 통과율로 판정한다.
+      느리지만(1~3분) stress 는 천천히 움직이는 신호라 그 지연을 감당할 수 있다.
+    """
+    bad = set()
     if probe:
-        return sorted(set(p_bad))
-    return [a for a in live if perf[a] < TARGET_PERF]
+        bad |= {a for a in p_bad if a in PROBED}
+        # probe 로 못 재는 앱은 느려도 채점값(CloudWatch)으로 본다
+        bad |= {a for a in live if a not in PROBED and perf[a] < TARGET_PERF}
+        # CPU 가 확실히 포화면 그것도 신호로 인정한다 (지연보다 빠르다)
+        bad |= {a for a in p_bad if a not in PROBED}
+    else:
+        bad |= {a for a in live if perf[a] < TARGET_PERF}
+    return sorted(bad)
 
 
 def advise(led, snap, nodes, memory, probe=None):
@@ -210,8 +236,15 @@ def advise(led, snap, nodes, memory, probe=None):
     #   ★축소는 두 신호가 모두 여유로울 때만 한다. 느린 쪽만 보고 내리면
     #     방금 올라온 부하를 못 보고 용량을 뺏는다.
     calm_slow = all(perf[a] >= SCALE_IN_PERF for a in live)
-    calm_fast = (not probe) or (not p_bad and len(p_ok) >= len([
-        a for a in ("user", "product", "stress") if (probe or {}).get(a)]))
+    # 빠른 신호: probe 로 재는 앱은 실측 통과율이 여유선 위여야 한다.
+    fast_apps_ok = all((probe or {}).get(a, {}).get("pass", 100) >= PROBE_OK for a in PROBED)
+    # stress 는 CPU 로 본다. 다만 CPU 는 보조 신호다 —
+    #   포화가 아니거나(60% 이하), 채점값인 통과율이 이미 여유선 위면 여유로 본다.
+    #   CPU 만 보면 stress 가 종일 70% 로 도는 회차에서 영원히 축소를 못 한다.
+    sc = (probe or {}).get("stress", {}).get("cpu_pct")
+    stress_ok = (sc is None or sc <= STRESS_CPU_OK
+                 or (perf.get("stress") is not None and perf["stress"] >= SCALE_IN_PERF))
+    calm_fast = (not probe) or (not below and fast_apps_ok and stress_ok)
     if nodes > FLOOR and calm_slow and calm_fast:
         why.append(f"전 앱 여유[{shot}] → 축소 ({nodes}→{nodes-1}대, {total_rps:.0f}rps)")
         return -1, why

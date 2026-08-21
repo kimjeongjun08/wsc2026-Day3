@@ -153,7 +153,12 @@ watch)
     echo "이전 원장을 이어서 쓴다 (RESUME=1)"
   else
     rm -f .round-ledger.json .stress-req-bumped
-    echo "회차 원장 초기화"
+    # ★로그도 회차마다 새로 시작한다.
+    #   이어 붙이면 지난 회차의 판단 줄이 남아, 로그를 훑어 원인을 볼 때
+    #   옛 줄을 지금 것으로 착각한다(실측: 버린 회차의 줄을 보고 있었다).
+    #   지난 회차는 지우지 말고 이름을 붙여 남긴다.
+    [ -s autotune.log ] && mv autotune.log "autotune-$(date +%m%d-%H%M).log"
+    echo "회차 원장 초기화 (이전 로그는 autotune-*.log 로 보관)"
   fi
   echo "감시·조정 루프를 켠다 (죽으면 자동 재기동). 로그: autotune.log"
   cat > .supervise.sh <<'SUP'

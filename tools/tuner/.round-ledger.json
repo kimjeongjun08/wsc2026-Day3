@@ -1,0 +1,1 @@
+{"led": {"minutes": 3.4106407165527344, "node_minutes": 6.821281433105469, "req": {"user": 452.0, "product": 41.0, "stress": 0.0}, "ok": {"user": 452.0, "product": 41.0, "stress": 0.0}, "under": {"user": 447.48, "product": 40.59, "stress": 0.0}}, "memory": {"started": true}, "last_ts": 1787289436.4017448}
