@@ -119,6 +119,34 @@ sys.exit(1 if bad else 0)" || fail=$((fail+1))
   [ "${R:-0}" -gt 3 ] && hmm "$D 재시작 ${R}회 — 자원 부족을 의심해라"
 done
 
+echo "== 4e. 튜너가 '지금' 판단하고 있나  ← 잠금만 보면 속는다"
+# 실측 사고(2026-08-21 공식 120분): watch 를 두 번 불러 두 개가 떴다.
+# 잠금이 둘째를 막았고(정상), 첫째는 이미 죽어 있었다. 아무도 몰랐다.
+# 120분 회차 내내 튜너가 판단을 한 번도 안 했고, 노드 변화는 HPA+Karpenter
+# 기본 동작이었다. 로그에는 "다른 튜너가 잡고 있다"만 1437번 찍혀 정상처럼 보였다.
+# 잠금이 있는지가 아니라 '원장이 갱신되는지'를 봐야 한다.
+NPROC=$(pgrep -c -f 'autotune[.]sh run' 2>/dev/null | head -1)
+case "${NPROC:-0}" in (''|*[!0-9]*) NPROC=0;; esac
+if [ "${NPROC:-0}" -gt 2 ]; then
+  bad "운영 루프가 ${NPROC}개 돈다 — 중복 실행이다"
+  echo "       고치기: pkill -f '[.]supervise[.]sh'; pkill -f 'autotune[.]sh run'  뒤 ./GO.sh watch"
+elif [ "${NPROC:-0}" = 0 ]; then
+  hmm "운영 루프가 안 돈다 (트래픽 전이면 정상 — ./GO.sh watch 로 켠다)"
+else
+  LED=${LEDGER:-.round-ledger.json}
+  if [ -f "$LED" ]; then
+    AGE=$(( $(date +%s) - $(mtime "$LED") ))
+    if [ "$AGE" -gt 180 ]; then
+      bad "원장이 ${AGE}초째 그대로다 — 루프가 살아만 있고 판단은 안 한다"
+      echo "       autotune.log 를 봐라. 잠금 충돌이면 위 방법으로 다시 켜라."
+    else ok "운영 루프 ${NPROC}개, 원장 ${AGE}초 전 갱신 (정상 판단 중)"; fi
+  else hmm "원장이 아직 없다 (트래픽이 시작되면 생긴다)"; fi
+fi
+# 로그에 잠금 충돌이 쌓여 있으면 그것도 잡는다
+LC=$(grep -c "다른 튜너가 이미" autotune.log 2>/dev/null | head -1)
+case "${LC:-0}" in (''|*[!0-9]*) LC=0;; esac
+[ "$LC" -gt 5 ] && bad "로그에 잠금 충돌 ${LC}건 — 중복 실행이 있었다"
+
 echo "== 5. 노드 수와 상한이 도구 상태와 맞나"
 ST=$(cat "${STATE:-.autotune-state}" 2>/dev/null || echo "")
 T=$(awk '{print $1}' <<<"$ST"); M=$(awk '{print $2}' <<<"$ST"); C=$(awk '{print $3}' <<<"$ST")

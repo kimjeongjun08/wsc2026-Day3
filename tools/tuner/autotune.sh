@@ -373,7 +373,15 @@ case "${1:-run}" in
     lock_beat() {
       kubectl -n "$NS" create cm tuner-lock         --from-literal=owner="$LOCK_ID" --from-literal=ts="$(date +%s)"         --dry-run=client -o yaml 2>/dev/null | kubectl apply -f - >/dev/null 2>&1
     }
-    lock_take || exit 3
+    # ★잠금을 못 잡으면 바로 포기한다(exit 3). 감독 루프도 재기동하지 않는다.
+    #   실측: 거부당한 쪽이 5초마다 무한 재시도해 1437번 헛돌았다.
+    #   로그가 그 메시지로 가득 차서 진짜 상태를 못 보게 만든다.
+    if ! lock_take; then
+      echo "!! 시작하지 않는다. 먼저 그쪽을 끄고 다시 실행해라." >&2
+      : > .no-restart      # 감독 루프에게 재기동하지 말라고 알린다
+      exit 3
+    fi
+    rm -f .no-restart
     # ★죽으면 왜 죽었는지 남긴다.
     #   실측: 긴 회차에서 이 루프가 76분 만에 조용히 끝났다. 로그 마지막 줄은
     #   정상적인 트래픽 라인이었고 에러가 없었다. 원인을 못 찾은 채 감독 루프로

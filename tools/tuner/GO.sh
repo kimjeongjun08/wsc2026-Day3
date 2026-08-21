@@ -155,6 +155,21 @@ watch)
   #   실측에서 운영 루프가 76분 만에 조용히 죽은 적이 있다. 원인은 아직 모른다.
   #   대회 중에 그러면 그 뒤 구간은 통째로 방치된다. 죽으면 다시 띄운다.
   #   setsid 로 세션에서 떼어낸다 — nohup 만으로는 SSH 가 끊길 때 같이 죽는다.
+  # ★기존 감독 루프를 먼저 끈다.
+  #   실측 사고(2026-08-21 공식 120분 회차): watch 를 두 번 불렀는데 첫 번째를
+  #   안 껐다. 잠금이 두 번째를 막았지만(정상), 첫 번째는 이미 죽어 있었고
+  #   아무도 그걸 몰랐다. 결과: 120분 회차 내내 튜너가 판단을 한 번도 안 했다.
+  #   노드 변화는 HPA+Karpenter 기본 동작이었고, 점수는 도구와 무관한 값이었다.
+  #   로그를 봐도 "다른 튜너가 잡고 있다"만 1437번 찍혀 있어 정상처럼 보인다.
+  if pgrep -f '[.]supervise[.]sh' >/dev/null 2>&1 || pgrep -f 'autotune[.]sh run' >/dev/null 2>&1; then
+    echo "이미 돌고 있는 감시 루프를 끈다 (중복 실행은 회차를 통째로 버린다)"
+    pkill -f '[.]supervise[.]sh' 2>/dev/null
+    pkill -f 'autotune[.]sh run' 2>/dev/null
+    sleep 3
+  fi
+  # 남의 잠금이 남아 있으면 여기서 넘겨받는다 — 위에서 우리 프로세스는 다 껐다.
+  kubectl -n "${NS:-apdev}" delete cm tuner-lock >/dev/null 2>&1
+
   # ★회차 원장은 여기서 초기화한다.
   #   watch 는 '회차 시작할 때 한 번' 부르는 명령이다. 감독 루프가 중간에
   #   재기동할 때는 원장이 이어져야 하므로 autotune 쪽에서는 절대 안 지운다.
@@ -197,6 +212,11 @@ while :; do
   echo "=== [$(date +%H:%M:%S)] 운영 루프 기동 #$n" >> autotune.log
   ./autotune.sh run >> autotune.log 2>&1
   rc=$?   # ★먼저 잡아둔다. 아래 문자열의 $(date) 가 $? 를 덮어쓴다.
+  if [ -f .no-restart ]; then
+    echo "=== [$(date +%H:%M:%S)] 재기동하지 않는다 (다른 튜너가 이 클러스터를 잡고 있다)" >> autotune.log
+    rm -f .no-restart
+    exit 0
+  fi
   echo "=== [$(date +%H:%M:%S)] 운영 루프 종료 rc=$rc — 5초 뒤 재기동" >> autotune.log
   sleep 5
 done
