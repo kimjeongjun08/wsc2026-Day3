@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # common.sh — 클러스터/AWS 공통 헬퍼. 채점 서버와 무관하며 대회 환경에서 그대로 돈다.
 set -uo pipefail
-export AWS_PROFILE=${AWS_PROFILE:-lee}
+# ★프로파일을 강제하지 않는다.
+#   예전엔 ${AWS_PROFILE:-lee} 였다. 'lee' 는 내 연습 환경 이름이고, 대회장이나
+#   다른 사람 PC 에서는 존재하지 않는 프로파일을 가리키게 된다. 안 정해져 있으면
+#   AWS CLI 의 기본 동작(default 프로파일 / 환경변수 / 인스턴스 역할)에 맡긴다.
+[ -n "${AWS_PROFILE:-}" ] && export AWS_PROFILE
 export AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-ap-northeast-2}
 # 숫자 포맷만 C 로 고정한다. 로케일에 따라 awk/printf 가 소수점을 쉼표로 찍으면
 # (예: de_DE) 파이썬 float 파싱이 깨진다. 문자 인코딩은 건드리지 않는다.
