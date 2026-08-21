@@ -40,6 +40,13 @@ SCALE_IN_PERF = float(os.environ.get("SCALE_IN_PERF", 95))
 FLOOR = int(os.environ.get("FLOOR_NODES", 2))
 
 
+# 표본이 이보다 적은 앱은 판단에서 뺀다.
+#   1분 해상도로 읽으므로 조용한 구간에는 앱당 수십 건뿐이다. 그중 하나만
+#   느려도 통과율이 크게 튀고, 그걸 믿으면 트래픽도 없는데 노드를 산다.
+#   pretune 에서 같은 함정을 이미 겪었다(stress 84건일 때 42.86% / 239건일 때 79.59%).
+MIN_SAMPLES = float(os.environ.get("MIN_SAMPLES", 30))
+
+
 def estimate(snap):
     """ALB 스냅샷 → 앱별 {통과율, 성공률, rps}"""
     perf, avail, rps = {}, {}, {}
@@ -48,6 +55,11 @@ def estimate(snap):
         if not d:
             continue
         req, e5 = d.get("req", 0.0), d.get("e5", 0.0)
+        if req < MIN_SAMPLES:
+            rps[app] = d.get("rps", 0.0)
+            perf[app] = None
+            avail[app] = None
+            continue
         rps[app] = d.get("rps", 0.0)
         avail[app] = (100.0 * (req - e5) / req) if req > 0 else None
         p = score.perf_from_percentiles({int(k): v for k, v in (d.get("p") or {}).items()},

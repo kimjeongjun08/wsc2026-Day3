@@ -122,7 +122,16 @@ if same:
 else:
     fails.append("회차 길이 독립성")
 
-print("== 8. 통과율 추정이 실측과 맞는가")
+print("== 8. 표본이 적은 앱은 판단에서 뺀다")
+d, why = decide.advise(ledger(3, 2, {"user": 99}),
+                       snap((12, 0, BAD), (12, 0, BAD), (2, 0, SBAD)), 2, {})
+ok = d == 0
+print(("  [O] " if ok else "  [X] ") + "조용한 구간의 몇 건짜리 표본으로 노드를 사지 않는다"
+      + f"  → {d:+d}")
+for w in why: print("        " + w)
+if not ok: fails.append("표본 가드")
+
+print("== 9. 통과율 추정이 실측과 맞는가")
 est = score.perf_from_percentiles(BAD, 0.200)
 ok = 40 <= est <= 60
 print(("  [O] " if ok else "  [X] ") + f"실측 peak2 user 분포 → 추정 {est:.1f}% (실제 채점 48.56%)")

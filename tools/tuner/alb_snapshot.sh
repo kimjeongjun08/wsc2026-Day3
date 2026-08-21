@@ -12,7 +12,12 @@ set -uo pipefail
 cd "$(dirname "$0")" || exit 1
 REGION=${AWS_DEFAULT_REGION:-ap-northeast-2}
 ALB_NAME=${ALB_NAME:-apdev-alb}
-WIN_MIN=${WIN_MIN:-3}          # 최근 몇 분을 볼지
+# ★1분 해상도로 읽고 '가장 최근 완료된 1분'을 쓴다.
+#   예전엔 3분을 한 덩어리(Period=180)로 평균냈다. 그러면 트래픽이 계단으로
+#   뛸 때(실측 스케줄: 9 → 312 rps) 직전 구간이 섞여 값이 뭉개지고, 대응이
+#   한 주기 늦는다. 피크 구간을 통째로 잃는 건 이 도구가 제일 크게 지는 방식이다.
+#   대신 표본이 적은 앱은 판단에서 빼야 한다 — decide.py 가 req 수로 거른다.
+WIN_MIN=${WIN_MIN:-5}          # 조회 범위(분). 판단에는 이 중 마지막 1분을 쓴다
 
 lb=$(aws elbv2 describe-load-balancers --region "$REGION" --names "$ALB_NAME" \
      --query 'LoadBalancers[0].LoadBalancerArn' --output text 2>/dev/null) || exit 1
@@ -25,7 +30,7 @@ tgs=$(aws elbv2 describe-target-groups --region "$REGION" --load-balancer-arn "$
 
 START=$(date -u -v-${WIN_MIN}M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "${WIN_MIN} minutes ago" +%Y-%m-%dT%H:%M:%SZ)
 END=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-PERIOD=$((WIN_MIN*60))
+PERIOD=60
 
 # get-metric-data 로 앱 3개 × (요청수, 5xx, 백분위 8개) 를 한 번에 가져온다.
 Q=$(LBDIM="$lbdim" PERIOD="$PERIOD" python3 - <<'PY'
@@ -65,13 +70,15 @@ for r in json.loads(sys.argv[1]).get("MetricDataResults", []):
     label = r.get("Label", "")
     if "|" not in label: continue
     app, tag = label.split("|", 1)
+    # get-metric-data 는 Timestamps 를 내림차순으로 준다 → [0] 이 가장 최근이다.
     vals = r.get("Values") or []
-    v = vals[0] if vals else None       # 최신 데이터포인트
+    v = vals[0] if vals else None
     d = out.setdefault(app, {"req": 0.0, "e5": 0.0, "p": {}})
     if tag == "req":  d["req"] = v or 0.0
     elif tag == "e5": d["e5"] = v or 0.0
     elif v is not None: d["p"][tag[1:]] = v
 for d in out.values():
     d["rps"] = round(d["req"] / period, 2)
+    d["win_s"] = period
 print(json.dumps(out, ensure_ascii=False))
 PY
