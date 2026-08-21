@@ -133,13 +133,21 @@ once() {
   [ "$want_shared" -lt 2 ] && want_shared=2
 
   if [ "$delta" -gt 0 ]; then
-    # stress 는 노드를 사기 전에 먼저 CFS 지분부터 돌려준다 — 0대짜리 대응이라 제일 싸다.
-    if [[ ",$bad," == *,stress,* ]] && [ "$cur_iso" = 0 ] && [ ! -f .stress-req-bumped ]; then
-      echo "   stress 밀림 → cpu.requests 를 ${STRESS_REQ_HI:-600m} 로 (노드 0대)"
-      ./tune_requests.sh "${STRESS_REQ_HI:-600m}" | tail -1
-      : > .stress-req-bumped
-      return 2
-    fi
+    # ★stress 의 cpu.requests 를 올리는 단계는 없앴다. 두 가지가 다 나빴다.
+    #
+    #   (1) user 것을 뺏는다.
+    #       600m 으로 올리면 stress : user = 8.6 : 1 이 된다. CFS 는 경합할 때
+    #       requests 비율로 나누므로 user 가 그만큼 굶는다.
+    #       실측(2026-08-21 ambush): 이 조치 후 user 통과율이 1.62% 였다.
+    #       같은 날 100m 으로 유지한 회차는 채점기 40.0/40 을 받았다.
+    #
+    #   (2) 과부하 한복판에 롤아웃을 부른다.
+    #       Deployment 패치는 롤링 재시작이고, 과부하에서는 새 파드가 기동 검사를
+    #       통과하지 못해 rollout status 가 300초를 꽉 채운다. 그동안 운영 루프는
+    #       아무 판단도 못 한다. 실측: 계단 진입 후 5분간 로그가 한 줄도 안 늘었고,
+    #       그 사이 p50 이 5초를 넘고 5xx 가 239건 났다. 첫 증설은 7분 뒤였다.
+    #
+    #   stress 에 용량이 더 필요하면 전용 노드로 준다. 남의 몫을 뺏지 않는다.
     [[ ",$bad," == *,stress,* ]] && want_iso=$((cur_iso+1))
     if [[ ",$bad," == *,user,* ]] || [[ ",$bad," == *,product,* ]]; then
       want_shared=$((want_shared+1))
@@ -264,9 +272,6 @@ print(' '.join(bad))")
 
 # ── 준비 단계 ─────────────────────────────────────────────────────────────
 prepare() {
-  # 지난 회차에서 stress requests 를 올렸다는 표시는 여기서 지운다.
-  # 안 지우면 다음 회차가 "이미 올렸다"고 판단해 1단계를 건너뛴다.
-  rm -f .stress-req-bumped
   # ★회차 원장도 여기서만 지운다.
   #   점수는 회차 '전체'의 누적으로 매겨진다. 그래서 도구도 누적을 들고 있어야
   #   "이미 벌어둔 비용 여유"와 "남은 구간"을 구분할 수 있다.
@@ -312,7 +317,7 @@ prepare() {
   #   트래픽을 재고 나면 run 루프가 상한을 하한까지 좁혀 비용을 확정한다.
   echo "== 콜드 스타트 구성 적용 (${COLD_NODES:-2}대 고정)"
   ./apply.sh "${COLD_NODES:-2}" "${COLD_MODE:-shared}" "${COLD_CAP:-${COLD_NODES:-2}}" | tail -3
-  ./tune_requests.sh "${COLD_STRESS_REQ:-100m}" | tail -1
+  cap "${REQ_TIMEOUT:-120}" ./tune_requests.sh "${COLD_STRESS_REQ:-100m}" | tail -1
 
 
   # 트래픽이 들어오는 순간에 이미 안정 상태여야 한다. 될 때까지 확인한다.

@@ -12,6 +12,11 @@
 #   그래도 stress 가 밀릴 수 있으므로 회차에서 stress 통과율을 반드시 같이 본다.
 #   과제지 기준: stress SLO 1초, 하드 5초. 실측 p50 은 동거에서 320~390ms 라 여유가 있다.
 set -uo pipefail
+# ★롤아웃 대기는 짧게 끊는다.
+#   과부하에서는 새 파드가 기동 검사를 통과하지 못해 rollout status 가 상한을
+#   꽉 채운다. 실측(2026-08-21 ambush): 그 300초 동안 운영 루프가 한 줄도 못 찍었고
+#   p50 이 5초를 넘었다. 롤아웃은 뒤늦게라도 끝나므로 기다릴 이유가 없다 —
+#   다음 주기가 현재 상태를 다시 본다.
 cd "$(dirname "$0")" || exit 1; source ./common.sh
 REQ=${1:?사용법: tune_requests.sh <requests 예: 300m> [limits 예: 1 | none]}
 LIM=${2:-}
@@ -31,5 +36,5 @@ else
   echo "== stress cpu requests → $REQ, limits.cpu → $LIM"
   bx "kubectl -n $NS patch deploy stress -p '{\"spec\":{\"template\":{\"spec\":{\"containers\":[{\"name\":\"stress\",\"resources\":{\"requests\":{\"cpu\":\"$REQ\"},\"limits\":{\"cpu\":\"$LIM\",\"memory\":\"512Mi\"}}}]}}}}' >/dev/null"
 fi
-bx "kubectl -n $NS rollout status deploy/stress --timeout=300s | tail -1
+bx "kubectl -n $NS rollout status deploy/stress --timeout=${ROLLOUT_TIMEOUT:-90}s | tail -1
 kubectl -n $NS get deploy stress -o jsonpath='{.spec.template.spec.containers[0].resources}'; echo"

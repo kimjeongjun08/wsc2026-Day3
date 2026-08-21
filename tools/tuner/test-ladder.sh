@@ -48,7 +48,7 @@ S
 }
 
 echo "== 증설"
-t "stress 밀림 + 동거 → 먼저 requests 상향(노드 0대)" "2 shared 4"  1 "stress"        "REQ 600m"
+t "★stress 밀림 → 남의 지분을 뺏지 않고 전용 노드로"      "2 shared 2"  1 "stress"        "APPLY n=3 mode=iso cap=3"
 t "user 밀림 → 공유 +1"                                "2 shared 2"  1 "user"          "APPLY n=3 mode=shared cap=3"
 t "★한 주기 순증은 1대 — 둘 다 밀리면 stress 전용부터" "3 iso 3"     1 "user,stress"   "APPLY n=4 mode=iso2 cap=4"
 t "위반 앱이 불분명해도 공유를 늘린다"                  "2 shared 2"  1 ""              "APPLY n=3 mode=shared cap=3"

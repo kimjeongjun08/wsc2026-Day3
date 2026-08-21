@@ -17,6 +17,11 @@
 #   minDomains 는 하한만 정한다. 상한이 없으면 HPA 가 파드를 늘리는 만큼
 #   Karpenter 가 노드를 계속 붙인다 (실측: x1.0 에서 9대 → 비용 0/12).
 set -uo pipefail
+# ★롤아웃 대기는 짧게 끊는다.
+#   과부하에서는 새 파드가 기동 검사를 통과하지 못해 rollout status 가 상한을
+#   꽉 채운다. 실측(2026-08-21 ambush): 그 300초 동안 운영 루프가 한 줄도 못 찍었고
+#   p50 이 5초를 넘었다. 롤아웃은 뒤늦게라도 끝나므로 기다릴 이유가 없다 —
+#   다음 주기가 현재 상태를 다시 본다.
 cd "$(dirname "$0")" || exit 1; source ./common.sh
 T=${1:?사용법: apply.sh <총노드수> [iso|shared] [상한노드수]}
 MODE=${2:-iso}
@@ -148,10 +153,10 @@ bx "for d in user product; do
     || kubectl -n $NS patch deploy \$d --type=json \
        -p='[{\"op\":\"add\",\"path\":\"/spec/template/spec/topologySpreadConstraints/0/minDomains\",\"value\":$MIN_DOMAINS}]' >/dev/null
 done
-kubectl -n $NS rollout status deploy/user --timeout=300s | tail -1
-kubectl -n $NS rollout status deploy/product --timeout=300s | tail -1"
+kubectl -n $NS rollout status deploy/user --timeout=${ROLLOUT_TIMEOUT:-90}s | tail -1
+kubectl -n $NS rollout status deploy/product --timeout=${ROLLOUT_TIMEOUT:-90}s | tail -1"
 fi
-bx "kubectl -n $NS rollout status deploy/stress --timeout=300s | tail -1"
+bx "kubectl -n $NS rollout status deploy/stress --timeout=${ROLLOUT_TIMEOUT:-90}s | tail -1"
 
 # 축소는 Karpenter 의 자발적 통합에 맡기지 않는다.
 #   limits.cpu 를 낮춰도 '이미 떠 있는' 노드는 안 지운다. 게다가 user/product 의
