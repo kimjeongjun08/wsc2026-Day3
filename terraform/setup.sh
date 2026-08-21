@@ -102,9 +102,34 @@ TRUST
   fi
 }
 
-aws iam create-policy \
-  --policy-name AWSLoadBalancerControllerIAMPolicy \
-  --policy-document file:///home/ec2-user/k8s/iam_policy.json 2>/dev/null || true
+# ★create-policy 는 실패를 삼키면 안 된다.
+#   예전엔 `2>/dev/null || true` 였다. 실측 사고(2026-08-21): 이 명령이 조용히 실패해
+#   정책이 아예 안 만들어졌고, eksctl 은 없는 ARN 을 붙이려다 실패했는데 그것도
+#   넘어갔다. 결과: AmazonEKSLoadBalancerControllerRole 에 정책이 하나도 없었다.
+#   그러면 컨트롤러가 DescribeTargetHealth 에서 403 을 맞고 TargetGroupBinding
+#   조정 전체를 포기한다 → 파드가 노드를 옮겨도 타깃이 갱신되지 않는다.
+#   증상은 엉뚱하게 나타난다: 파드는 전부 Running·healthcheck 200 인데
+#   ALB 타깃이 전부 unhealthy 고 사용자는 502 를 받는다.
+#   노드가 흔들리는 회차(=오토스케일링을 하는 모든 회차)에서 가용성 12점이 통째로 날아간다.
+LBC_POLICY_ARN="arn:aws:iam::$ACCOUNT_ID:policy/AWSLoadBalancerControllerIAMPolicy"
+if aws iam create-policy \
+     --policy-name AWSLoadBalancerControllerIAMPolicy \
+     --policy-document file:///home/ec2-user/k8s/iam_policy.json >/dev/null 2>&1; then
+  echo "  LBC 정책 생성됨"
+else
+  # 이미 있으면 새 버전을 올려 기본으로 만든다(버전은 5개까지라 옛것부터 지운다).
+  if aws iam get-policy --policy-arn "$LBC_POLICY_ARN" >/dev/null 2>&1; then
+    for v in $(aws iam list-policy-versions --policy-arn "$LBC_POLICY_ARN" \
+               --query 'Versions[?IsDefaultVersion==`false`].VersionId' --output text); do
+      aws iam delete-policy-version --policy-arn "$LBC_POLICY_ARN" --version-id "$v" >/dev/null 2>&1
+    done
+    aws iam create-policy-version --policy-arn "$LBC_POLICY_ARN" \
+      --policy-document file:///home/ec2-user/k8s/iam_policy.json --set-as-default >/dev/null \
+      && echo "  LBC 정책 최신 버전으로 갱신됨"
+  else
+    echo "  !! LBC 정책을 만들지도 찾지도 못했다 — 이대로면 ALB 타깃이 갱신되지 않는다" >&2
+  fi
+fi
 
 eksctl create iamserviceaccount \
   --cluster=$CLUSTER_NAME --region=$REGION \
@@ -113,6 +138,14 @@ eksctl create iamserviceaccount \
   --role-name AmazonEKSLoadBalancerControllerRole \
   --attach-policy-arn=arn:aws:iam::$ACCOUNT_ID:policy/AWSLoadBalancerControllerIAMPolicy \
   --approve --override-existing-serviceaccounts
+
+# ★역할에 정책이 실제로 붙었는지 확인한다. eksctl 이 조용히 넘어가는 경우가 있다.
+if ! aws iam list-attached-role-policies --role-name AmazonEKSLoadBalancerControllerRole \
+     --query 'AttachedPolicies[].PolicyArn' --output text 2>/dev/null | grep -q AWSLoadBalancerControllerIAMPolicy; then
+  echo "  LBC 역할에 정책이 없다 — 직접 붙인다"
+  aws iam attach-role-policy --role-name AmazonEKSLoadBalancerControllerRole \
+    --policy-arn "$LBC_POLICY_ARN" || echo "  !! 정책 부착 실패" >&2
+fi
 
 # SA가 안 만들어졌을 경우 대비
 kubectl get sa aws-load-balancer-controller -n kube-system 2>/dev/null || \
@@ -165,6 +198,14 @@ eksctl create iamserviceaccount \
   --role-name "KarpenterControllerRole-$CLUSTER_NAME" \
   --attach-policy-arn "arn:aws:iam::$ACCOUNT_ID:policy/KarpenterControllerPolicy-$CLUSTER_NAME" \
   --approve --override-existing-serviceaccounts
+
+# ★역할에 정책이 실제로 붙었는지 확인한다. eksctl 이 조용히 넘어가는 경우가 있다.
+if ! aws iam list-attached-role-policies --role-name AmazonEKSLoadBalancerControllerRole \
+     --query 'AttachedPolicies[].PolicyArn' --output text 2>/dev/null | grep -q AWSLoadBalancerControllerIAMPolicy; then
+  echo "  LBC 역할에 정책이 없다 — 직접 붙인다"
+  aws iam attach-role-policy --role-name AmazonEKSLoadBalancerControllerRole \
+    --policy-arn "$LBC_POLICY_ARN" || echo "  !! 정책 부착 실패" >&2
+fi
 ensure_irsa KarpenterControllerRole-$CLUSTER_NAME kube-system karpenter  # ★SA 보장(eksctl 스킵 대비) + 신뢰정책 현재 OIDC로 강제 → rollout 타임아웃 방지
 
 helm registry logout public.ecr.aws || true

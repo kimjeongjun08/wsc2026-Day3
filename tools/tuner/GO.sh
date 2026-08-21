@@ -6,6 +6,7 @@
 #   ./GO.sh status   지금 상태 한 눈에
 #   ./GO.sh score    지금까지의 누적 점수 전망 (회차 중 아무 때나)
 #   ./GO.sh check    판단 로직 자체 점검 (AWS 없이, 수 초)
+#   ./GO.sh doctor   ★트래픽 전 진단. 조용히 망가진 것을 찾는다 (클러스터 필요, 수 초)
 #
 # 40점이 나오는 조건 — 채점표 산수 그대로다:
 #   비용 12점 = 회차 '분' 평균 노드 2.00대 이하. 0.5대마다 정확히 1점씩 깎인다.
@@ -126,6 +127,12 @@ setup)
   done
 
   echo
+  echo "############################################################"
+  echo "# 진단 — 조용히 망가진 것이 없는지"
+  echo "############################################################"
+  ./doctor.sh || echo "   ※ 위 문제를 고치고 ./GO.sh doctor 로 다시 확인해라"
+
+  echo
   echo "=========================================================="
   echo " 준비 끝. 남은 것 두 가지:"
   echo "   1) 채점 플랫폼에 엔드포인트 등록  (미등록이면 0점)"
@@ -138,6 +145,16 @@ watch)
   #   실측에서 운영 루프가 76분 만에 조용히 죽은 적이 있다. 원인은 아직 모른다.
   #   대회 중에 그러면 그 뒤 구간은 통째로 방치된다. 죽으면 다시 띄운다.
   #   setsid 로 세션에서 떼어낸다 — nohup 만으로는 SSH 가 끊길 때 같이 죽는다.
+  # ★회차 원장은 여기서 초기화한다.
+  #   watch 는 '회차 시작할 때 한 번' 부르는 명령이다. 감독 루프가 중간에
+  #   재기동할 때는 원장이 이어져야 하므로 autotune 쪽에서는 절대 안 지운다.
+  #   이어서 돌리려면: RESUME=1 ./GO.sh watch
+  if [ "${RESUME:-0}" = 1 ]; then
+    echo "이전 원장을 이어서 쓴다 (RESUME=1)"
+  else
+    rm -f .round-ledger.json .stress-req-bumped
+    echo "회차 원장 초기화"
+  fi
   echo "감시·조정 루프를 켠다 (죽으면 자동 재기동). 로그: autotune.log"
   cat > .supervise.sh <<'SUP'
 #!/usr/bin/env bash
@@ -208,6 +225,11 @@ print("  -> %.1f/40" % s["total"] + ("   [경고] 통과율 30%% 미만이라 �
 '
   ;;
 
+doctor)
+  # 트래픽 전에 '조용히 망가진 것'을 찾는다. 여기서 걸리는 건 전부 실제로 당한 것들이다.
+  exec ./doctor.sh
+  ;;
+
 check)
   fix_crlf
   echo "== 판단 로직 (AWS 불필요)"
@@ -218,5 +240,5 @@ check)
   ;;
 
 *)
-  echo "사용: ./GO.sh [setup|watch|status|score|check]" >&2; exit 1 ;;
+  echo "사용: ./GO.sh [setup|watch|status|score|check|doctor]" >&2; exit 1 ;;
 esac

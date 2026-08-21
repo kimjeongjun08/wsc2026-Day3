@@ -262,8 +262,18 @@ def main():
             probe = json.loads(open(a.probe).read() if os.path.exists(a.probe) else a.probe)
         except Exception:
             probe = None
-    st = json.load(open(a.ledger)) if os.path.exists(a.ledger) else \
-        {"led": score.blank_ledger(), "memory": {}}
+    # ★원장이 깨졌으면 조용히 새로 시작한다.
+    #   쓰는 도중에 죽으면 JSON 이 반쯤 남는다. 그걸 못 읽고 예외로 죽으면
+    #   운영 루프가 매 주기 실패하고, 도구가 아무 판단도 안 하는 상태가 된다.
+    #   증상이 "조용히 아무것도 안 함"이라 알아채기가 제일 어렵다.
+    st = {"led": score.blank_ledger(), "memory": {}}
+    if os.path.exists(a.ledger):
+        try:
+            st = json.load(open(a.ledger))
+            st["led"]["minutes"]  # 모양 확인
+        except Exception as e:
+            print(f"   원장이 깨져 있어 새로 시작한다 ({type(e).__name__})")
+            st = {"led": score.blank_ledger(), "memory": {}}
     led, memory = st["led"], st.get("memory", {})
 
     # ★경과 시간은 벽시계로 잰다.
@@ -313,7 +323,13 @@ def main():
               f"{s['total']:.1f}/40 (성능 {s['performance']:.1f} 비용 {s['cost']:.1f})"
               + ("  ★게이트 걸림" if s["gated"] else ""))
     if not a.no_commit:
-        json.dump({"led": led, "memory": memory, "last_ts": st_last}, open(a.ledger, "w"))
+        # 원자적으로 쓴다 — 쓰는 도중에 죽어도 반쪽 파일이 안 남는다.
+        tmp = a.ledger + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump({"led": led, "memory": memory, "last_ts": st_last}, f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, a.ledger)
     # 배치 결정에 쓸 근거도 같이 넘긴다 — 어느 앱이 밀리는지에 따라
     # 노드를 '공유'로 붙일지 'stress 전용'으로 붙일지가 갈린다.
     bad = [x for x in score.APPS

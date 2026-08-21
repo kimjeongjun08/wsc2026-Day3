@@ -44,8 +44,14 @@ def perf_points(perf):
 
 
 def total(perf, avail, avg_ec2, abnormal=4.0):
-    """지금까지의 누적치로 매긴 40점. 비용 게이트까지 반영한다."""
-    gate = min(perf.get(a, 0.0) or 0.0 for a in APPS)
+    """지금까지의 누적치로 매긴 40점. 비용 게이트까지 반영한다.
+
+    ★아직 못 잰 앱은 게이트 판정에서 뺀다.
+      예전엔 None 을 0 으로 읽어서, 트래픽이 적어 표본이 없는 초반마다
+      '게이트 걸림'으로 표시됐다. 운영자가 로그에서 제일 먼저 보는 줄인데
+      거기에 거짓 경고가 뜨면 진짜 경고를 못 믿게 된다."""
+    seen = [perf[a] for a in APPS if perf.get(a) is not None]
+    gate = min(seen) if seen else 100.0
     cost = cost_points(avg_ec2) if gate >= PERF_GATE else 0.0
     return {
         "abnormal": abnormal,

@@ -25,7 +25,7 @@ cd "$(dirname "$0")" || exit 1; source ./common.sh
 REGION=${AWS_DEFAULT_REGION:-ap-northeast-2}
 ALB_NAME=${ALB_NAME:-apdev-alb}
 N=${PROBE_N:-15}
-TMO=${PROBE_TIMEOUT:-5}
+TMO=${PROBE_TIMEOUT:-2}
 
 ALB=${ALB_DNS:-}
 if [ -z "$ALB" ]; then
@@ -36,17 +36,37 @@ fi
 
 hex() { od -An -tx1 -N16 /dev/urandom | tr -d ' \n'; }
 
-times_for() {  # $1=경로템플릿
-  local i out
+# ★URL 을 eval 로 만들지 않는다.
+#   `eval echo "/v1/user?a=1&b=2"` 는 & 를 백그라운드 연산자로 읽어서 URL 이 잘린다.
+#   실측: 그 상태로 15개를 쏘면 전부 5초 타임아웃 → "전 앱 0% 통과" 라는 거짓 신호가
+#   나오고, 한 주기에 2분을 잡아먹는다. 방아쇠가 거짓말하면 도구 전체가 무의미하다.
+#
+# curl 한 번에 URL 여러 개를 넘긴다 — 연결을 재사용해서 15개가 1초 안에 끝난다.
+# ★-o /dev/null 은 URL 하나당 하나씩 필요하다.
+#   URL 을 여러 개 넘기면서 -o 를 한 번만 쓰면 첫 응답만 버려지고 나머지 본문이
+#   stdout 으로 쏟아진다(실측: 측정값 사이에 <html> 이 섞여 파싱이 죽었다).
+build_args() {  # $1=앱  → "-o /dev/null <url>" 를 N 번
+  local i
   for i in $(seq 1 "$N"); do
-    out=$(curl -s -o /dev/null -m "$TMO" -w '%{time_total}' \
-          "http://$ALB$(eval echo "$1")" 2>/dev/null) || out=$TMO
-    echo "$out"
-    done
+    printf -- '-o\n/dev/null\n'
+    case "$1" in
+      user)    printf 'http://%s/v1/user?email=probe%s@k6.local&requestid=%s&uuid=%s\n' \
+                      "$ALB" "$(hex)" "$(hex)" "$(hex)" ;;
+      product) printf 'http://%s/v1/product?id=p-%s&requestid=%s&uuid=%s\n' \
+                      "$ALB" "$(hex)" "$(hex)" "$(hex)" ;;
+    esac
+  done
 }
 
-U=$(times_for '/v1/user?email=probe$(hex)@k6.local&requestid=$(hex)&uuid=$(hex)')
-P=$(times_for '/v1/product?id=p-$(hex)&requestid=$(hex)&uuid=$(hex)')
+times_for() {
+  local args
+  mapfile -t args < <(build_args "$1")
+  [ "${#args[@]}" = 0 ] && return 1
+  curl -s -m "$TMO" -w '%{time_total}\n' "${args[@]}" 2>/dev/null
+}
+
+U=$(times_for user)
+P=$(times_for product)
 
 # stress 는 CPU 로 본다 (limits.cpu 대비 사용률)
 SCPU=$(kubectl top pods -n "${NS:-apdev}" --no-headers 2>/dev/null \

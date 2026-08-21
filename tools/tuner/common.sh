@@ -10,6 +10,22 @@ export AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-ap-northeast-2}
 # 숫자 포맷만 C 로 고정한다. 로케일에 따라 awk/printf 가 소수점을 쉼표로 찍으면
 # (예: de_DE) 파이썬 float 파싱이 깨진다. 문자 인코딩은 건드리지 않는다.
 export LC_NUMERIC=C
+# ★AWS 호출이 영원히 매달리지 않게 한다.
+#   운영 루프는 한 주기가 60초다. 그 안에서 aws 호출 하나가 기본값(연결 60초,
+#   읽기 60초, 재시도 최대)으로 물리면 주기가 통째로 밀리고, 그동안 트래픽은
+#   대응 없이 흐른다. 대회에서 이건 회차를 버리는 것과 같다.
+#   짧게 끊고 다음 주기에 다시 시도하는 쪽이 항상 낫다 — 지표는 1분마다 갱신되니까.
+export AWS_MAX_ATTEMPTS=${AWS_MAX_ATTEMPTS:-2}
+export AWS_RETRY_MODE=${AWS_RETRY_MODE:-standard}
+export AWS_CLI_CONNECT_TIMEOUT=${AWS_CLI_CONNECT_TIMEOUT:-5}
+export AWS_CLI_READ_TIMEOUT=${AWS_CLI_READ_TIMEOUT:-15}
+
+# 겉옷: 어떤 명령이든 시간 상한을 씌운다. timeout 이 없는 환경도 있으므로 확인한다.
+if command -v timeout >/dev/null 2>&1; then
+  cap() { timeout "${1}s" "${@:2}"; }
+else
+  cap() { shift; "$@"; }
+fi
 BASTION=${BASTION:-}
 NS=${NS:-apdev}
 

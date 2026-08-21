@@ -104,7 +104,7 @@ import json, os
 d = json.loads(os.environ["SNAP"])
 print(" ".join(f"{k}={v.get(chr(114)+chr(112)+chr(115),0)}rps" for k, v in sorted(d.items())))' 2>/dev/null)"
 
-  nodes=$(kubectl get nodes --no-headers 2>/dev/null | grep -c " Ready")
+  nodes=$(cap 15 kubectl get nodes --no-headers 2>/dev/null | grep -c " Ready")
   [ "${nodes:-0}" = 0 ] && { echo "   노드를 못 읽었다"; return 0; }
 
   # ★지금 파드가 어떤지는 직접 잰다. CloudWatch 는 1~3분 늦어서 방아쇠로 못 쓴다.
@@ -112,7 +112,7 @@ print(" ".join(f"{k}={v.get(chr(114)+chr(112)+chr(115),0)}rps" for k, v in sorte
   #   채점기는 자기 주입 요청만 세므로 점수에 안 들어간다.
   local prb=""
   if [ "${USE_PROBE:-1}" = 1 ]; then
-    prb=$(./probe.sh 2>/dev/null)
+    prb=$(cap "${PROBE_TIMEOUT_ALL:-20}" ./probe.sh 2>/dev/null)
     case "${prb:-}" in ''|'{}') prb="";; esac
   fi
 
