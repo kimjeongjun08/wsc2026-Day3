@@ -157,6 +157,11 @@ ensure_irsa AmazonEKSLoadBalancerControllerRole kube-system aws-load-balancer-co
 
 helm repo add eks https://aws.github.io/eks-charts
 helm repo update eks
+# ★LB 컨트롤러에도 CPU 요청을 준다(상한은 안 건다).
+#   이 컨트롤러가 멈추면 파드가 노드를 옮겨도 ALB 타깃이 갱신되지 않는다.
+#   실측(2026-08-21): 요청이 없어 과부하에서 굶었고, 별개로 IAM 정책 누락까지
+#   겹치면서 파드는 전부 Running·healthcheck 200 인데 ALB 는 502 를 반환했다.
+#   가용성 12점이 통째로 걸린 컴포넌트다. 앱과 CPU 를 두고 경쟁하게 두면 안 된다.
 helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
   -n kube-system \
   --set clusterName=$CLUSTER_NAME \
@@ -164,7 +169,10 @@ helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-contro
   --set serviceAccount.name=aws-load-balancer-controller \
   --set region=$REGION \
   --set vpcId=$VPC_ID \
-  --set replicaCount=2
+  --set replicaCount=2 \
+  --set resources.requests.cpu=150m \
+  --set resources.requests.memory=256Mi \
+  --set resources.limits.memory=512Mi
 
 kubectl rollout status deploy/aws-load-balancer-controller -n kube-system --timeout=120s
 echo "=== LBC installed ==="

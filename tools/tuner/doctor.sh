@@ -95,6 +95,30 @@ else
   ok "cpu.requests stress ${SR:-?} / user ${UR:-?}"
 fi
 
+echo "== 4d. 노드를 만드는 컨트롤러가 살아 있나  ← 죽으면 증설이 통째로 무산된다"
+# 실측(2026-08-21 ambush, 노드 CPU 103%): karpenter 가 0/1 Ready 로 7번 재시작하며
+# 죽어 있었다. 튜너는 매 주기 "3대로 가자"고 결정했지만 노드는 하나도 안 생겼다.
+# 판단은 옳은데 실행이 불가능한 상태 — 로그만 봐서는 절대 못 찾는다.
+for D in karpenter aws-load-balancer-controller; do
+  J=$(kubectl -n kube-system get deploy "$D" -o json 2>/dev/null)
+  [ -z "$J" ] && { hmm "$D 를 못 찾았다"; continue; }
+  echo "$J" | python3 -c "
+import json,sys,os
+d=json.load(sys.stdin); n=d['metadata']['name']
+st=d.get('status',{}); want=d['spec'].get('replicas',1)
+rdy=st.get('readyReplicas',0)
+c=d['spec']['template']['spec']['containers'][0].get('resources',{})
+req=(c.get('requests') or {}).get('cpu'); lim=(c.get('limits') or {}).get('cpu')
+bad=[]
+if rdy<want: bad.append('준비 %d/%d'%(rdy,want))
+if not req:  bad.append('CPU 요청 없음(과부하에 굶는다)')
+if lim:      bad.append('CPU 상한 %s(스로틀된다)'%lim)
+print(('   [X] ' if bad else '   [O] ')+n+' '+(', '.join(bad) if bad else 'ready %d/%d, cpu요청 %s, 상한 없음'%(rdy,want,req)))
+sys.exit(1 if bad else 0)" || fail=$((fail+1))
+  R=$(kubectl -n kube-system get pods -l app.kubernetes.io/name="$D" --no-headers 2>/dev/null | awk '{s+=$4} END{print s+0}')
+  [ "${R:-0}" -gt 3 ] && hmm "$D 재시작 ${R}회 — 자원 부족을 의심해라"
+done
+
 echo "== 5. 노드 수와 상한이 도구 상태와 맞나"
 ST=$(cat "${STATE:-.autotune-state}" 2>/dev/null || echo "")
 T=$(awk '{print $1}' <<<"$ST"); M=$(awk '{print $2}' <<<"$ST"); C=$(awk '{print $3}' <<<"$ST")
