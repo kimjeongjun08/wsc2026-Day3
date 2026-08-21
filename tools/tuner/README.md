@@ -386,12 +386,18 @@ autotune.sh       그걸 배치(공유 / stress 전용)로 옮겨 apply.sh 를 �
 `practice/loadcurve.py` (채점기 없이 회차를 돌리고 채점하는 도구) 하나만
 `aiohttp` 를 쓴다. 없으면 이것만 못 돌고 튜너는 멀쩡히 돈다.
 
+실제 대회 PC(WSL2, Ubuntu, python 3.12)에서 통한 명령은 이것이다:
+
 ```bash
-python3 -m pip install --user aiohttp      # pip3 명령이 없으면 이렇게
+sudo apt-get install -y python3-pip
+python3 -m pip install --user --break-system-packages aiohttp
 ```
 
-> WSL 에 `pip3` 실행파일이 없는 경우가 있다. `python3 -m pip` 로 부르면 된다.
-> 그것도 없으면: `sudo apt install -y python3-pip`
+> 세 가지가 다 필요했다:
+> · `pip3` 실행파일이 없다 → `python3 -m pip` 로 부른다
+> · `python3 -m pip` 자체가 없다 → `apt-get install python3-pip` 먼저
+> · python 3.12 는 외부 관리 환경이라 그냥 설치하면 거부한다(PEP 668)
+>   → `--break-system-packages` (사용자 홈에만 설치되므로 시스템은 안 건드린다)
 
 ### macOS 에서도 돌지만 주의
 
