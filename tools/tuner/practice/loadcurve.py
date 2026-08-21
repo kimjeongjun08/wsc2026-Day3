@@ -17,6 +17,16 @@ import argparse, asyncio, json, os, random, string, subprocess, sys, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import score
 
+# ★stress 요청 본문 길이. 채점기 meta 의 stress_length 를 그대로 쓴다.
+#   injector.py '소스 기본값'은 50~200 인데, 실제 채점기 meta 는 25~150 이다.
+#   meta 가 코드 기본값보다 우선한다(curve.py 주석에도 그렇게 적혀 있다).
+#   실측 사고(2026-08-21): 소스 기본값 50~200 으로 쏘다가 "유휴에서도 stress
+#   통과율 80% 가 천장이다 → 40점 불가능"이라는 틀린 결론을 냈다.
+#   SLA 를 넘긴 요청들의 길이가 156~194 였는데, 그건 채점기가 아예 안 보내는 길이다.
+#   부하 발생기가 실제보다 무거운 요청을 쏘면 앱을 탓하게 된다.
+STRESS_LEN = (int(os.environ.get("STRESS_LEN_MIN", 25)),
+              int(os.environ.get("STRESS_LEN_MAX", 150)))
+
 # 채점기 meta 의 injection_rates 를 그대로 옮긴 것 (2026-08-21 확인).
 RATES = {
     "user_post":    {"base": 2,   "peak1": 22,  "peak2": 65},
@@ -70,7 +80,7 @@ def build(kind, seeded):
              "price": random.randint(100, 9999)})
     if kind == "stress_post":
         return "POST", "/v1/stress", json.dumps(
-            {"requestid": rid, "uuid": uu, "length": random.randint(50, 200)})
+            {"requestid": rid, "uuid": uu, "length": random.randint(*globals()["STRESS_LEN"])})
     if kind == "image_get":
         return "GET", f"/images/none/{rnd(8)}.jpg", None
     return "GET", f"/v1/user?email=' OR 1=1--&requestid={rid}&uuid={uu}", None
@@ -260,6 +270,58 @@ def grade(path):
     return s
 
 
+def load_from_grader():
+    """채점기 meta 에서 rates 와 stress 길이를 그대로 읽어온다.
+
+    ★코드 기본값을 베끼면 안 된다.
+      채점기의 curve.py 주석에 이미 적혀 있다 — "문서에 적어둔 값은 믿지 말고
+      항상 확인할 것. DB(meta) 값이 코드 기본값보다 우선한다."
+      실측 사고(2026-08-21): injector.py 소스의 stress 길이 기본값 50~200 을 베껴
+      썼는데 실제 meta 는 25~150 이었다. 훨씬 무거운 요청을 쏘고서
+      "유휴에서도 통과율 80% 가 천장 → 40점 불가능"이라는 틀린 결론을 냈다.
+      부하 발생기가 실제보다 센 부하를 쏘면 앱과 도구를 애먼 데서 탓하게 된다.
+
+    연습 환경(채점기 접근 가능)에서만 동작한다. 대회장에서는 위 기본값을 쓴다.
+    """
+    import subprocess
+    env = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    cfg = {}
+    if os.path.exists(env):
+        for line in open(env):
+            if "=" in line and not line.strip().startswith("#"):
+                k, v = line.strip().split("=", 1)
+                cfg[k] = v.strip().strip("'\"")
+    host, pw = cfg.get("GRADER"), cfg.get("GPASS")
+    if not host or not pw:
+        return False
+    py = "/opt/cloudgame/engine-venv/bin/python"
+    q = ("import sqlite3,json;c=sqlite3.connect('/opt/cloudgame/data/app.sqlite');"
+         "g=lambda k:(c.execute('select value from meta where key=?',(k,)).fetchone() or [None])[0];"
+         "print(json.dumps({'rates':g('injection_rates'),'len':g('stress_length')}))")
+    try:
+        out = subprocess.run(["sshpass", "-p", pw, "ssh", "-o", "StrictHostKeyChecking=no",
+                              "-o", "ConnectTimeout=15", f"root@{host}", f"{py} -c \"{q}\""],
+                             capture_output=True, text=True, timeout=40).stdout
+        d = json.loads(out)
+    except Exception as e:
+        print(f"   (채점기에서 설정을 못 읽었다: {type(e).__name__} — 기본값을 쓴다)")
+        return False
+    changed = []
+    if d.get("rates"):
+        r = json.loads(d["rates"])
+        for k in RATES:
+            if k in r:
+                RATES[k] = r[k]
+        changed.append("rates")
+    if d.get("len"):
+        L = json.loads(d["len"])
+        globals()["STRESS_LEN"] = (int(L["min"]), int(L["max"]))
+        changed.append(f"stress 길이 {L['min']}~{L['max']}")
+    if changed:
+        print("   채점기 설정 반영: " + ", ".join(changed))
+    return True
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("scenario", choices=list(SCENARIOS) + ["grade"])
@@ -271,6 +333,8 @@ if __name__ == "__main__":
         grade(a.out); sys.exit(0)
     if not a.endpoint:
         print("ENDPOINT 를 넘겨라", file=sys.stderr); sys.exit(1)
+    if os.environ.get("USE_GRADER_CFG", "1") == "1":
+        load_from_grader()
     sched = SCENARIOS[a.scenario]
     print(f"== {a.scenario} x{a.mult}  ({sched[-1][0]}분)  → {a.endpoint}")
     prev = 0
