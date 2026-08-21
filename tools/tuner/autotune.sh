@@ -161,14 +161,26 @@ once() {
     #   두 칸을 한 번에 뛰었다(실측 3회차). 노드 1대는 비용 2점이라 두 칸이면 4점이고,
     #   효과를 재보기도 전에 지불하는 셈이다. 한 칸씩 사고 3분 뒤 채점한다.
     #   둘 다 밀리면 게이트에 가까운 쪽(stress)을 먼저 산다 — 비용 12점이 걸려 있다.
-    if [ "$((want_shared+want_iso))" -gt "$((cur_n+1))" ]; then
+    # 게이트 방어(delta=2)는 두 칸까지 허용한다. 그 외는 한 칸.
+    local maxstep=1; [ "$delta" -ge 2 ] && maxstep=2
+    if [ "$delta" -ge 2 ]; then
+      # 둘 다 밀리면 이미 두 칸이 잡혀 있다. 한쪽만 밀리면 그쪽으로 한 칸 더 준다.
+      if [ "$((want_shared+want_iso))" -le "$((cur_n+1))" ]; then
+        if [[ ",$bad," == *,stress,* ]] && [ "$want_iso" -gt "$cur_iso" ]; then
+          want_shared=$((want_shared+1))
+        else
+          want_shared=$((want_shared+1))
+        fi
+      fi
+    fi
+    if [ "$((want_shared+want_iso))" -gt "$((cur_n+maxstep))" ]; then
       if [ "$want_iso" -gt "$cur_iso" ]; then
         want_shared=$((cur_n-cur_iso))          # stress 전용만 +1
       else
         want_iso=$cur_iso                        # 공유만 +1
         want_shared=$((cur_n-cur_iso+1))
       fi
-      echo "   (한 주기 순증은 1대까지 — 나머지는 다음 주기에)"
+      echo "   (한 주기 순증은 ${maxstep}대까지 — 나머지는 다음 주기에)"
     fi
     new_n=$((want_shared+want_iso))
     [ "$new_n" -gt "$MAX_NODES" ] && { echo "   상한 $MAX_NODES 대 — 더 못 늘린다"; return 0; }

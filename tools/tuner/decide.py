@@ -49,6 +49,7 @@ import score
 E5_SEVERE = float(os.environ.get("E5_SEVERE", 5.0))     # 이 위면 즉시
 E5_WARN = float(os.environ.get("E5_WARN", 1.0))         # 이 위 + 누적이 나쁘면
 AVAIL_DANGER = float(os.environ.get("AVAIL_DANGER", 97.0))
+GATE_FAR = float(os.environ.get("GATE_FAR", 20.0))   # 누적이 이보다 낮으면 두 칸씩
 GATE_DANGER = float(os.environ.get("GATE_DANGER", 40))  # 누적이 이 밑이면 게이트 위험
 # ★히스테리시스. 목표 tier 는 90% 다.
 #   90 에서 늘리고 90 에서 줄이면 경계에서 노드가 왔다갔다 하고, 그때마다 롤아웃이
@@ -236,11 +237,20 @@ def advise(led, snap, nodes, memory, probe=None):
               if (cum.get(a) if cum.get(a) is not None else 100.0) < GATE_DANGER
               and a in failing]
     if danger and nodes < int(os.environ.get("MAX_NODES", 8)):
+        # ★게이트는 tier 가 아니라 절벽이다. 한 칸씩 오를 이유가 없다.
+        #   비용 12점이 통째로 걸려 있고, 넘기 전까지는 한 푼도 못 받는다.
+        #   한 주기 1대 규칙은 'tier 를 쫓을 때' 과잉지출을 막으려는 것이고,
+        #   절벽 앞에서는 오히려 손해다 — 실측(2026-08-21 ambush): 12분 회차에서
+        #   1대씩 올라 6대까지밖에 못 갔고 게이트를 못 넘어 비용 0 으로 끝났다.
+        #   평균 3.5대면 게이트만 열려도 비용 9점이다. 2~3점 더 내고 9점을 연다.
+        #   격차가 클수록 크게 벌린다(최대 2대).
+        gap = min(cum[a] for a in danger)
+        step = 2 if (gap < GATE_FAR and nodes + 2 <= int(os.environ.get("MAX_NODES", 8))) else 1
         why.append("누적 통과율 "
                    + ", ".join(f"{a}={cum[a]:.0f}%" for a in danger)
-                   + f" 이고 지금도 못 내고 있다 — 비용 게이트(30%) 방어 증설 [{shot}]")
+                   + f" 이고 지금도 못 내고 있다 — 비용 게이트(30%) 방어, {step}대 증설 [{shot}]")
         memory.pop("escalation_pays", None)
-        return +1, why
+        return step, why
 
     # ── 3) 목표 추격 ──────────────────────────────────────────────────────
     #   90% 를 못 넘긴 앱이 있으면 늘린다. 다만 이 회차에서 증설이 효과 없다는 게

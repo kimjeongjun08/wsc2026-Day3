@@ -124,6 +124,22 @@ print(("  [O] " if ok else "  [X] ") + f"한 주기는 참고 두 주기째에 �
 for x in w2: print("        " + x)
 if not ok: fails.append("CloudWatch 안전망")
 
+print("== 2e. 게이트는 절벽이다 — 격차가 크면 두 칸씩")
+# 실측(ambush): 12분 회차에서 1대씩 올라 6대까지밖에 못 갔고 게이트를 못 넘어
+# 비용 0 으로 끝났다. 평균 3.5대면 게이트만 열려도 비용 9점이다.
+m = {}
+d, w = decide.advise(ledger(8, 3, {"user": 5, "product": 99, "stress": 99}),
+                     snap((9000, 0, BAD), (9000, 0, CALM), (600, 0, SCALM)), 3, m, PBAD2)
+ok = d == 2
+print(("  [O] " if ok else "  [X] ") + f"누적 5% (절벽에서 멂) → 두 칸  → {d:+d}")
+for x in w: print("        " + x)
+if not ok: fails.append("게이트 두 칸")
+d2, w2 = decide.advise(ledger(8, 3, {"user": 32, "product": 99, "stress": 99}),
+                       snap((9000, 0, BAD), (9000, 0, CALM), (600, 0, SCALM)), 3, {}, PBAD2)
+ok2 = d2 == 1
+print(("  [O] " if ok2 else "  [X] ") + f"누적 32% (절벽 근처) → 한 칸  → {d2:+d}")
+if not ok2: fails.append("게이트 한 칸")
+
 print("== 3. 증설이 효과 없다는 게 드러나면 그만둔다 (대조군의 함정)")
 led = ledger(63, 4, {"user": 48})
 m = {"last_upsize": {"nodes": 4, "minute": 60, "perf": {"user": 48.0, "product": 99.0, "stress": 72.0}}}
