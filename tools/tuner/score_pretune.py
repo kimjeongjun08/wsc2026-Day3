@@ -9,17 +9,20 @@
   그중 하나만 SLA 를 넘어도 통과율이 0% 로 튀고, 그러면 비용 게이트를 잘못 판정한다
   (실측: stress 0.00% → 24.0점으로 오판). 그래서 최소 표본 수를 요구한다.
 """
+import os
 import sys
 
-SLA = {"user": 0.2, "product": 0.2, "stress": 1.0}
-PERF_TIERS = [90, 87.5, 85, 82.5, 80, 70, 50, 30]
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import score as _score          # 채점표는 한 곳에서만 정의한다 (score.py)
+
+SLA = _score.SLA_S
 # stress 는 표본이 적으면 판정이 크게 흔들린다.
 #   실측: 같은 4노드/iso2 구성인데 84건일 때 42.86%, 239건일 때 79.59% 가 나왔다.
 #   앱마다 필요한 최소 표본을 따로 잡는다.
 MIN_SAMPLES = {"user": 50, "product": 50, "stress": 150}
 
 def perf_points(p):
-    return sum(0.5 for t in PERF_TIERS if p >= t)
+    return _score.tier_high(p, _score.PERF_TIERS)
 
 def main():
     nodes = float(sys.argv[1]); dur = float(sys.argv[2])
@@ -49,8 +52,7 @@ def main():
     solid = {a: v for a, v in res.items() if v is not None}
     perf = sum(perf_points(v) for v in solid.values())
     gate = min(solid.values()) if solid else 0.0
-    ratio = nodes / 2.0
-    cost = sum(1.0 for i in range(12) if 1.0 + 0.25 * i >= ratio) if gate >= 30 else 0.0
+    cost = _score.cost_points(nodes) if gate >= _score.PERF_GATE else 0.0
 
     fmt = lambda v: "표본부족" if v is None else "%.2f" % v
     print("\t".join([fmt(res["user"]), fmt(res["product"]), fmt(res["stress"]),

@@ -1,68 +1,68 @@
 #!/usr/bin/env bash
-# test-ladder.sh — 과부하 사다리의 분기를 트래픽 없이 검증한다.
-#
-# 왜 필요한가:
-#   사다리가 맞게 갈라지는지 확인하려고 채점 회차를 60분씩 돌리는 건 낭비다.
-#   실제 부하가 필요한 건 "그래서 지연이 내려가나"(물리)뿐이고,
-#   "어느 가지로 가나"(로직)는 스텁으로 몇 초면 끝난다.
-#   실제로 이 테스트를 먼저 돌려 하네스 결함을 잡았다.
-#
-# 사용: ./test-ladder.sh        (클러스터·AWS 자격증명 불필요)
+# test-ladder.sh — once() 가 판단(DELTA/BAD)을 실제 배치로 옮기는 부분을 검증한다.
+#   AWS·클러스터 없이 돈다. 판단 자체는 test-decide.py 가 본다.
 set -uo pipefail
 cd "$(dirname "$0")" || exit 1
-SRC=$PWD
-WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT
-cp autotune.sh common.sh "$WORK/"
-cd "$WORK"
-printf '#!/usr/bin/env bash\necho "APPLY nodes=$1 mode=$2 cap=${3:-}"\n' > apply.sh
-printf '#!/usr/bin/env bash\necho "REQ $1"\n' > tune_requests.sh
-chmod +x apply.sh tune_requests.sh
-
+SRC=$(pwd)
 pass=0; fail=0
-case_is() {  # <설명> <state> <위반> <트래픽> <기대문자열>
-  local desc=$1 state=$2 ov=$3 traffic=$4 want=$5 got
-  echo "$state" > .autotune-state
-  # 헤더(변수 선언부)를 뺀 슬라이스만 평가하므로 -u 는 여기서만 푼다
-  got=$( set +u; source ./common.sh 2>/dev/null
-    STATE=.autotune-state; MAX_NODES=8; CAP_MARGIN=2; INTERVAL=60; MIN_GAIN=1.0
-    eval "$(sed -n '/^# ── 과부하 방어/,$p' autotune.sh | sed '/^case "\${1:-run}"/,$d')"
-    eval "read_traffic()   { echo '$traffic'; }"
-    eval "overload_nodes() { echo '$ov'; }"
-    recalibrate_curves() { :; }
-    ask_solver()     { echo "최적: 노드 2대 / stress=shared → 예상 40.0/40"; }
-    ready()          { return 0; }
-    once yes 2>&1 )
-  if grep -qF "$want" <<<"$got"; then
-    echo "  [O] $desc"; pass=$((pass+1))
+
+t() { # t <이름> <STATE> <DELTA> <BAD> <기대문자열>
+  local name=$1 state=$2 delta=$3 bad=$4 want=$5
+  local d; d=$(mktemp -d)
+  cp autotune.sh common.sh "$d/"
+  printf '%s\n' "$state" > "$d/.autotune-state"
+  cat > "$d/alb_snapshot.sh" <<'S'
+#!/usr/bin/env bash
+echo '{"user":{"req":100,"e5":0,"rps":10,"p":{"50":0.05}},"product":{"req":100,"e5":0,"rps":10,"p":{"50":0.05}},"stress":{"req":10,"e5":0,"rps":1,"p":{"50":0.3}}}'
+S
+  cat > "$d/decide.py" <<S
+import sys
+print("   (스텁 판단)")
+print("BAD=$bad"); print("WORST=user"); print("DELTA=$delta")
+S
+  cat > "$d/apply.sh" <<'S'
+#!/usr/bin/env bash
+echo "APPLY n=$1 mode=$2 cap=$3"
+S
+  cat > "$d/tune_requests.sh" <<'S'
+#!/usr/bin/env bash
+echo "REQ $1"
+S
+  cat > "$d/kubectl" <<'S'
+#!/usr/bin/env bash
+for a in "$@"; do [ "$a" = nodes ] && { echo "n1 Ready x x x"; echo "n2 Ready x x x"; exit 0; }; done
+S
+  chmod +x "$d"/*.sh "$d/kubectl"
+  local got
+  got=$(cd "$d" && PATH="$d:$PATH" bash -c '
+    set +u; source ./common.sh 2>/dev/null
+    STATE=.autotune-state; MAX_NODES=8; CAP_MARGIN=2; INTERVAL=60
+    eval "$(sed -n "/^# ── 한 번 돌기/,/^# ── 안정화 확인/p" autotune.sh | sed "/^# ── 안정화 확인/d")"
+    once yes 2>&1')
+  if grep -q -- "$want" <<<"$got"; then
+    echo "  [O] $name"; pass=$((pass+1))
   else
-    echo "  [X] $desc"; echo "      기대: $want"; echo "      실제: $(grep -E 'APPLY|REQ|과부하' <<<"$got" | tr '\n' ' ')"; fail=$((fail+1))
+    echo "  [X] $name"; echo "      기대: $want"; echo "$got" | sed 's/^/      /'; fail=$((fail+1))
   fi
+  rm -rf "$d"
 }
 
-echo "== 과부하 사다리 분기"
-rm -f .stress-req-bumped
-case_is "stress 굶주림 → requests 상향 (노드 0대)"   "2 shared 4" "stress 3" '{"user":22,"product":45,"stress":7.0}' "REQ 600m"
-touch .stress-req-bumped
-case_is "requests 올린 뒤 → 전용 한 칸 (공유 2 유지)" "2 shared 4" "stress 3" '{"user":22,"product":45,"stress":7.0}' "APPLY nodes=3 mode=iso"
-case_is "iso → iso2 승급"                            "3 iso 5"   "stress 4" '{"user":22,"product":45,"stress":7.0}' "APPLY nodes=4 mode=iso2"
-case_is "공유 4대는 유지한 채 전용만 +1"             "4 shared 6" "stress 5" '{"user":66,"product":90,"stress":7.0}' "APPLY nodes=5 mode=iso"
-case_is "user 과부하 → 공유 +1, 배치 유지"           "2 shared 4" "user 3"   '{"user":66,"product":45,"stress":0.5}' "APPLY nodes=3 mode=shared"
-case_is "product 과부하 → 공유 +1"                   "3 iso 5"   "product 4" '{"user":22,"product":90,"stress":0.5}' "APPLY nodes=4 mode=iso"
+echo "== 증설"
+t "stress 밀림 + 동거 → 먼저 requests 상향(노드 0대)" "2 shared 4"  1 "stress"        "REQ 600m"
+t "user 밀림 → 공유 +1"                                "2 shared 4"  1 "user"          "APPLY n=3 mode=shared cap=5"
+t "user+stress 동시 (이미 requests 올림) → 둘 다"       "3 iso 5"     1 "user,stress"   "APPLY n=5 mode=iso2 cap=7"
+t "위반 앱이 불분명해도 공유를 늘린다"                  "2 shared 4"  1 ""              "APPLY n=3 mode=shared cap=5"
+t "상한을 넘기지 않는다"                                "8 shared 10" 1 "user"          "상한 8 대"
 
-echo "== ★ 동시 위반 — 한 주기에 둘 다 처리"
-# 실측 사고: stress 가 매 주기 위반해 user 차례가 영영 오지 않았고
-#            공유가 2대에 묶인 채 user perf 가 48.6% → 3.5% 로 무너졌다.
-case_is "stress+user 동시 → 공유 3 + 전용 1 = 4/iso"  "2 shared 4" "stress,user 3" '{"user":130,"product":35,"stress":7.0}' "APPLY nodes=4 mode=iso"
-case_is "stress+user+product 동시 → 공유 +1, 전용 +1" "3 iso 5"   "user,product,stress 4" '{"user":130,"product":90,"stress":7.0}' "APPLY nodes=5 mode=iso2"
-rm -f .stress-req-bumped
-case_is "stress+user, requests 아직 → requests 상향과"  "2 shared 4" "stress,user 3" '{"user":130,"product":35,"stress":7.0}' "REQ 600m"
-rm -f .stress-req-bumped
-case_is "  같은 주기에 공유 노드도 함께 늘어난다"      "2 shared 4" "stress,user 3" '{"user":130,"product":35,"stress":7.0}' "APPLY nodes=3 mode=shared"
+echo "== 축소 (여기가 제일 크게 번다)"
+t "★축소는 상한도 같이 닫는다 (안 닫으면 노드가 안 준다)" "5 shared 7" -1 ""            "APPLY n=4 mode=shared cap=4"
+t "stress 가 멀쩡하면 전용 노드부터 반납"                "4 iso 6"    -1 ""             "APPLY n=3 mode=shared cap=3"
+t "stress 가 밀리는 중이면 전용은 건드리지 않는다"       "4 iso 6"    -1 "stress"       "APPLY n=3 mode=iso cap=3"
+t "바닥 2대 아래로는 안 내린다"                          "2 shared 2" -1 ""             "더 내릴 곳이 없다"
 
-echo "== 한계"
-touch .stress-req-bumped
-case_is "상한 도달 시 더 늘리지 않는다"               "8 shared 10" "user 9"  '{"user":66,"product":45,"stress":0.5}' "더 늘릴 수 없다"
+echo "== 유지"
+t "delta=0 이면 아무것도 안 한다"                        "3 shared 5"  0 ""             "(스텁 판단)"
 
 echo
-echo "통과 $pass / 실패 $fail"
+echo "$pass/$((pass+fail)) 통과"
 [ "$fail" = 0 ]

@@ -4,6 +4,18 @@
 #   ./GO.sh          트래픽 전: 준비 → 최적값 탐색 → 적용 → 안정화 확인
 #   ./GO.sh watch    트래픽 시작 후: 감시·조정 루프를 백그라운드로 켠다
 #   ./GO.sh status   지금 상태 한 눈에
+#   ./GO.sh score    지금까지의 누적 점수 전망 (회차 중 아무 때나)
+#   ./GO.sh check    판단 로직 자체 점검 (AWS 없이, 수 초)
+#
+# 40점이 나오는 조건 — 채점표 산수 그대로다:
+#   비용 12점 = 회차 '분' 평균 노드 2.00대 이하. 0.5대마다 정확히 1점씩 깎인다.
+#     → 비용이 '분' 평균이므로, 매 분 제약을 만족하는 최소 노드 수를 쓰면
+#       회차 길이와 무관하게 평균이 최소가 된다. 그래서 이 도구는 회차가
+#       15분이든 120분이든 같은 판단을 한다. 따로 맞출 게 없다.
+#   성능 12점 = 세 앱 모두 SLA 안에 든 요청 90% 이상 (user·product 200ms, stress 1s).
+#   → 노드 1대 = 2점. 성능은 앱당 최대 4점. 그래서 노드를 사서 이기려는 전략은
+#     거의 항상 진다. 기본자세는 '2대 동거(shared)'이고 증설은 산수로 이득이
+#     증명될 때만 한다. stress 를 전용 노드로 빼면 최소 3대 = 비용 10점이 천장이다.
 #
 # 하는 일 (트래픽 전):
 #   1) 앱 처리 한계 측정 (동시성 곡선)
@@ -125,7 +137,8 @@ setup)
 watch)
   echo "감시·조정 루프를 백그라운드로 켠다. 로그: autotune.log"
   nohup ./autotune.sh run > autotune.log 2>&1 &
-  echo "PID $! — 끄려면: pkill -f 'autotune.sh run'"
+  echo "PID $! — 끄려면: pkill -f 'autotune[.]sh run'"
+  echo "회차 길이는 안 물어본다 — 15분이든 2시간이든 같은 판단으로 돈다."
   sleep 3
   tail -5 autotune.log
   ;;
@@ -141,6 +154,36 @@ status)
   ./autotune.sh ready 2>&1 | tail -8
   ;;
 
+score)
+  # 회차 중 아무 때나. decide.py 가 쌓아온 원장으로 누적 점수를 보여준다.
+  python3 -c '
+import json, os, sys
+sys.path.insert(0, ".")
+import score
+p = ".round-ledger.json"
+if not os.path.exists(p):
+    print("아직 원장이 없다 - 트래픽이 시작되고 한 주기 지나면 생긴다"); raise SystemExit
+led = json.load(open(p))["led"]
+perf, avail, avg = score.ledger_metrics(led)
+s = score.total(perf, avail, avg or 2.0)
+print("누적 %.0f분 - 분 평균 노드 %.2f대 (비용비 %.2f)" % (led["minutes"], avg, avg/2))
+for a in score.APPS:
+    print("  %-8s 통과율 %6.2f%%   성공률 %6.2f%%" % (a, perf[a] or 0, avail[a] or 0))
+print("  비정상 %4.1f/4   고가용성 %5.1f/12   성능 %5.1f/12   비용 %5.1f/12"
+      % (s["abnormal"], s["availability"], s["performance"], s["cost"]))
+print("  -> %.1f/40" % s["total"] + ("   [경고] 통과율 30%% 미만이라 비용이 통째로 0 이다" if s["gated"] else ""))
+'
+  ;;
+
+check)
+  fix_crlf
+  echo "== 판단 로직 (AWS 불필요)"
+  python3 test-decide.py || exit 1
+  echo
+  echo "== 배치 변환"
+  ./test-ladder.sh || exit 1
+  ;;
+
 *)
-  echo "사용: ./GO.sh [setup|watch|status]" >&2; exit 1 ;;
+  echo "사용: ./GO.sh [setup|watch|status|score|check]" >&2; exit 1 ;;
 esac

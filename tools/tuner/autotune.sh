@@ -66,241 +66,98 @@ read_traffic() {
   echo "$out}"
 }
 
-# ── ALB 실측 지연으로 곡선을 자기보정한다 ────────────────────────────────
-# 곡선은 내가 보낸 요청 본문으로 잰 것이다. 실제 트래픽의 본문이 다르면 비용이 다르다.
-#   실측: stress 는 length 88 → 226ms, 150 → 489ms, 250 → 3299ms (초선형)
-# 주입기가 뭘 보내는지는 볼 수 없으므로, "곡선 예측 vs ALB 실측"의 비율을 계수로 저장해
-# 숨은 변수(요청 본문·앱 버전·DB 크기 증가)를 통째로 흡수한다.
-recalibrate_curves() {
-  local lb lbdim tg name rt traffic nodes mode
-  traffic=$(read_traffic) || return 1
-  nodes=$(awk '{print $1}' "$STATE" 2>/dev/null)
-  mode=$(awk '{print $2}' "$STATE" 2>/dev/null)
-  [ -z "${nodes:-}" ] && return 0
-  lb=$(aws elbv2 describe-load-balancers --region "$REGION" --names "$ALB_NAME" \
-       --query 'LoadBalancers[0].LoadBalancerArn' --output text 2>/dev/null)
-  lbdim=${lb##*loadbalancer/}
-  local obs="{" first=1
-  for tg in $(aws elbv2 describe-target-groups --region "$REGION" --load-balancer-arn "$lb" \
-              --query 'TargetGroups[].TargetGroupArn' --output text 2>/dev/null); do
-    name=$(aws elbv2 describe-target-groups --region "$REGION" --target-group-arns "$tg" \
-           --query 'TargetGroups[0].TargetGroupName' --output text); name=${name#apdev-}
-    rt=$(aws cloudwatch get-metric-statistics --region "$REGION" \
-         --namespace AWS/ApplicationELB --metric-name TargetResponseTime \
-         --dimensions Name=LoadBalancer,Value="$lbdim" Name=TargetGroup,Value="${tg##*:}" \
-         --start-time "$(date -u -v-6M +%Y-%m-%dT%H:%M:%S 2>/dev/null || date -u -d '6 minutes ago' +%Y-%m-%dT%H:%M:%S)" \
-         --end-time "$(date -u +%Y-%m-%dT%H:%M:%S)" --period 60 --statistics Average \
-         --extended-statistics p50 --query 'sort_by(Datapoints,&Timestamp)[-1].ExtendedStatistics.p50' \
-         --output text 2>/dev/null)
-    [ -z "$rt" ] || [ "$rt" = "None" ] && continue
-    [ $first -eq 0 ] && obs="$obs,"; obs="$obs\"$name\":$(python3 -c "print(round($rt*1000,1))")"; first=0
-  done
-  obs="$obs}"
-  [ "$obs" = "{}" ] && return 0
-  python3 - "$traffic" "$obs" "$nodes" "$mode" <<'PY'
-import json, sys, importlib.util
-traffic, obs, nodes, mode = json.loads(sys.argv[1]), json.loads(sys.argv[2]), int(sys.argv[3]), sys.argv[4]
-spec = importlib.util.spec_from_file_location("solve", "solve.py")
-solve = importlib.util.module_from_spec(spec); spec.loader.exec_module(solve)
-cal = json.load(open("calibration.json"))
-curves = solve.load_curves(".")
-profiles = solve.load_profiles(".", traffic)
-row = solve.evaluate(profiles, traffic, {"user":200,"product":200,"stress":1000},
-                     2.0, cal, nodes, mode, curves)
-if not row:
-    raise SystemExit(0)
-scale = cal.get("curve_scale", {})
-for app, seen_ms in obs.items():
-    key = f"{app}-post" if f"{app}-post" in curves else next((k for k in curves if k.startswith(app)), None)
-    if not key: continue
-    c = row["apps"].get(app, {}).get("rho", 1.0)
-    pred = solve.curve_latency(curves[key], c)
-    if pred <= 0: continue
-    new = seen_ms / pred
-    old = scale.get(app, 1.0)
-    scale[app] = round(0.5*old + 0.5*max(0.2, min(20.0, new)), 3)   # 급변 방지로 절반씩 반영
-    print(f"   보정 {app}: 곡선예측 {pred:.0f}ms vs ALB실측 {seen_ms:.0f}ms → 계수 {old:.2f}→{scale[app]:.2f}")
-cal["curve_scale"] = scale
-json.dump(cal, open("calibration.json","w"), indent=2, ensure_ascii=False)
-PY
-}
-
-# ── 솔버에게 물어본다 ─────────────────────────────────────────────────────
-ask_solver() {
-  python3 solve.py --traffic "$1" --min-nodes 2 --max-nodes "$MAX_NODES" --top 5
-}
-
-pick_of() { sed -n 's/^최적: 노드 \([0-9]*\)대 \/ stress=\([a-z0-9]*\).*/\1 \2/p' <<<"$1"; }
-score_of() { sed -n 's/^최적:.*예상 \([0-9.]*\)\/40.*/\1/p' <<<"$1"; }
-
-# ── 과부하 방어 ───────────────────────────────────────────────────────────
-# 모델은 정상 구간에서는 정확했지만(실측 오차 0.5점), 시스템이 무너지는 구간은 못 본다.
-#   실측: 앱을 2배 무겁게 했더니 stress 응답이 12.5초까지 늘어 주입기 타임아웃으로
-#   실패 처리됐고(가용성 54.96%), 점수는 16.5 였다. 모델은 35.5 를 예측했다.
-# 그래서 모델과 별개로 ALB 실측 지연을 보고 직접 방어한다.
-# SLA 를 넘고 있으면 계산을 기다리지 않고 노드를 늘린다.
-# 출력: "<위반앱들(쉼표)> <늘려야 할 노드 수>"  (위반 없으면 빈 값)
-#   ★어느 앱이 무너졌는지를 반드시 같이 돌려준다.
-#   예전엔 worst=1 로 뭉개고 개수만 돌려줬는데, 그러면 대응이 "노드 +1" 하나뿐이라
-#   stress 가 굶는 상황(동거 + 낮은 cpu.requests)에서는 노드를 아무리 늘려도 안 낫는다.
-#   늘린 노드에 user/product 가 같이 올라타 stress 의 CFS 지분이 그대로이기 때문이다.
-#   실측(공식 peak2, stress 7rps): 2대→4대로 늘려도 stress p95 30초 유지, 5xx 수백 건.
-overload_nodes() {
-    local lb lbdim tg name rt cur bad=''
-    cur=$(awk '{print $1}' "$STATE" 2>/dev/null)
-    [ -z "${cur:-}" ] && return 0
-    lb=$(aws elbv2 describe-load-balancers --region "$REGION" --names "$ALB_NAME" \
-         --query 'LoadBalancers[0].LoadBalancerArn' --output text 2>/dev/null)
-    lbdim=${lb##*loadbalancer/}
-    for tg in $(aws elbv2 describe-target-groups --region "$REGION" --load-balancer-arn "$lb" \
-                --query 'TargetGroups[].TargetGroupArn' --output text 2>/dev/null); do
-      name=$(aws elbv2 describe-target-groups --region "$REGION" --target-group-arns "$tg" \
-             --query 'TargetGroups[0].TargetGroupName' --output text); name=${name#apdev-}
-      rt=$(aws cloudwatch get-metric-statistics --region "$REGION" \
-           --namespace AWS/ApplicationELB --metric-name TargetResponseTime \
-           --dimensions Name=LoadBalancer,Value="$lbdim" Name=TargetGroup,Value="${tg##*:}" \
-           --start-time "$(date -u -v-4M +%Y-%m-%dT%H:%M:%S 2>/dev/null || date -u -d '4 minutes ago' +%Y-%m-%dT%H:%M:%S)" \
-           --end-time "$(date -u +%Y-%m-%dT%H:%M:%S)" --period 60 --statistics Average \
-           --query 'sort_by(Datapoints,&Timestamp)[-1].Average' --output text 2>/dev/null)
-      [ -z "$rt" ] || [ "$rt" = "None" ] && continue
-      local sla=0.2; [ "$name" = stress ] && sla=1.0
-      if [ "$(python3 -c "print(1 if $rt > $sla else 0)")" = 1 ]; then
-        echo "   [!] $name 응답 $(python3 -c "print(round($rt*1000))")ms > SLA $(python3 -c "print(int($sla*1000))")ms" >&2
-        bad="$bad,$name"
-      fi
-    done
-    [ -n "$bad" ] && echo "${bad#,} $((cur+1))"
-    return 0
-}
+# ── 옛 판단 경로는 걷어냈다 ──────────────────────────────────────────────
+#   recalibrate_curves / ask_solver / overload_nodes 는 "곡선 모델로 최적 노드 수를
+#   계산하고, ALB 평균 지연이 SLA 를 넘으면 늘린다"는 설계였다. 둘 다 실측에서 졌다.
+#     · 모델: 동거 모드에서 무거운 앱 지연을 크게 과대평가해 40점 구성을 탈락시켰다.
+#     · 평균 지연: 채점되는 값이 아니다. 실측 user 는 평균이 SLA 를 넘었는데
+#       통과율은 48.6% 였다 — "넘었다"만 알면 tier 를 겨냥할 수 없다.
+#   지금은 alb_snapshot.sh(백분위) + decide.py(점수 산수) 가 그 자리를 대신한다.
+#   곡선 측정(concurrency.sh)은 여전히 prepare 에서 콜드 스타트 크기를 잡는 데 쓴다.
 
 # ── 한 번 돌기 ────────────────────────────────────────────────────────────
+# ★판단 기준을 "SLA 를 넘었나"에서 "점수가 오르나"로 바꿨다.
+#   예전 규칙은 ALB 평균 지연이 SLA 를 넘으면 노드를 늘렸다. 그건 증상 대응이다.
+#   실측 대조군(공식 120분)에서 그 규칙은 노드를 6대까지 밀어올렸는데
+#   성능은 tier 를 하나도 못 넘겼고 비용만 12 → 8 로 깎였다 (총 30.0/40).
+#   채점표 산수로는 노드 1대가 비용 2점이고 성능은 앱당 최대 4점이다.
+#   그래서 "늘려서 얻을 수 있는 최대치"가 "비용으로 확실히 잃는 값"보다 작으면
+#   그 증설은 계산할 것도 없이 손해다. decide.py 가 그 산수를 한다.
+#
+#   그리고 비용은 '분' 평균, 성능은 '요청' 비율이다. 트래픽이 빠진 구간의 노드는
+#   순손실이다 — 대조군은 하강 구간 40분을 평균 4.93대로 버텨 2점을 그냥 버렸다.
+#   그래서 축소를 증설만큼 중요하게 다룬다.
 once() {
-  local apply=${1:-yes} traffic out nodes mode score cur
-  traffic=$(read_traffic) || return 1
-  echo "[$(date +%H:%M:%S)] 트래픽: $traffic"
-  # 트래픽이 거의 없으면(아직 시작 전) 아무것도 바꾸지 않는다
-  if [ "$(python3 -c "import json;print(1 if sum(json.loads('$traffic').values())<1 else 0)")" = 1 ]; then
-    echo "   트래픽이 아직 없다 — 대기"; return 0
-  fi
-  # SLA 를 넘고 있으면 모델을 기다리지 않고 즉시 대응한다 (과부하 붕괴는 회복이 느리다)
-  #
-  # ★위반한 앱을 한 주기에 전부 처리한다.
-  #   예전엔 stress 를 먼저 보고 그 주기를 끝냈다. 그런데 peak2 에서는 stress 가
-  #   매 주기 위반하므로(SLO 1초 vs 실측 5~16초) user 차례가 영영 오지 않았고,
-  #   공유 노드가 2대에 묶인 채 user perf 가 48.6% → 3.5% 로 무너졌다.
-  #   stress 를 전용으로 빼는 것과 공유를 늘리는 것은 서로 배타적이지 않다.
-  local urgent bad_apps urgent_n cur_n cur_m cur_iso sr
-  local want_iso want_shared new_mode new_n did=0
-  urgent=$(overload_nodes)
-  if [ -n "${urgent:-}" ]; then
-    read -r bad_apps urgent_n <<<"$urgent"
-    cur_n=$(awk '{print $1}' "$STATE" 2>/dev/null); cur_m=$(awk '{print $2}' "$STATE" 2>/dev/null)
-    cur_n=${cur_n:-2}; cur_m=${cur_m:-shared}
-    case "$cur_m" in shared) cur_iso=0;; iso) cur_iso=1;; iso*) cur_iso=${cur_m#iso};; *) cur_iso=0;; esac
-    sr=$(TRJ="$traffic" python3 -c "import json,os;t=json.loads(os.environ['TRJ']);print(round(sum(v for k,v in t.items() if k.startswith('stress')),2))" 2>/dev/null)
-    want_iso=$cur_iso
-    want_shared=$((cur_n-cur_iso)); [ "$want_shared" -lt 2 ] && want_shared=2
+  local apply=${1:-yes} snap nodes cur_n cur_m cur_iso cap
+  local delta bad worst out
+  snap=$(WIN_MIN=${WIN_MIN:-3} ./alb_snapshot.sh 2>/dev/null) || {
+    echo "[$(date +%H:%M:%S)] ALB 지표를 못 읽었다 — 이번 주기는 건너뛴다"; return 0; }
+  echo "[$(date +%H:%M:%S)] $(SNAP="$snap" python3 -c '
+import json, os
+d = json.loads(os.environ["SNAP"])
+print(" ".join(f"{k}={v.get(chr(114)+chr(112)+chr(115),0)}rps" for k, v in sorted(d.items())))' 2>/dev/null)"
 
-    if [ "$apply" = "yes" ]; then
-      # ── stress ────────────────────────────────────────────────────────────
-      #   먼저 CFS 지분을 돌려준다 — 노드 0대짜리 대응이라 제일 싸다.
-      #   동거에서 requests 를 100m 로 낮추면 가벼운 트래픽에선 이득이지만(실측 +1.5점),
-      #   경합이 생기면 가장 무거운 워크로드가 가장 작은 지분을 갖게 되어 고사한다.
-      #   되돌리지는 않는다 — 롤아웃은 가용성을 깎으므로 회차 중 왕복시키지 않는다.
-      if [[ ",$bad_apps," == *,stress,* ]]; then
-        if [ "$cur_iso" = 0 ] && [ ! -f .stress-req-bumped ]; then
-          echo "   과부하(stress) → cpu.requests 를 ${STRESS_REQ_HI:-600m} 로 (노드 0대)"
-          ./tune_requests.sh "${STRESS_REQ_HI:-600m}" | tail -1
-          : > .stress-req-bumped; did=1
-        else
-          # 전용 노드는 한 칸씩만 올린다. rps 표로 목표를 단번에 잡지 않는다 —
-          # 실측(peak2 stress 7rps)에서 전용 2대는 CPU 26% 로 과잉이었다.
-          want_iso=$((cur_iso+1))
-        fi
-      fi
+  nodes=$(kubectl get nodes --no-headers 2>/dev/null | grep -c " Ready")
+  [ "${nodes:-0}" = 0 ] && { echo "   노드를 못 읽었다"; return 0; }
 
-      # ── user/product ──────────────────────────────────────────────────────
-      #   공유 노드를 늘린다. stress 대응과 같은 주기에 함께 반영한다.
-      if [[ ",$bad_apps," == *,user,* ]] || [[ ",$bad_apps," == *,product,* ]]; then
-        want_shared=$((want_shared+1))
-      fi
+  out=$(MAX_NODES=$MAX_NODES \
+        python3 decide.py --snapshot "$snap" --nodes "$nodes" \
+          $([ "$apply" = yes ] || echo --no-commit) 2>&1) || {
+    echo "   판단 실패:"; echo "$out" | tail -3; return 0; }
+  echo "$out" | grep -v '^[A-Z][A-Z]*='
+  delta=$(sed -n 's/^DELTA=//p' <<<"$out")
+  bad=$(sed -n 's/^BAD=//p' <<<"$out")
+  worst=$(sed -n 's/^WORST=//p' <<<"$out")
+  [ -z "${delta:-}" ] && return 0
+  [ "$delta" = 0 ] && return 0
+  [ "$apply" != yes ] && { echo "   show 모드라 적용 안 함 (delta=$delta)"; return 0; }
 
-      # ── 합쳐서 한 번만 적용한다 ───────────────────────────────────────────
-      new_n=$((want_shared+want_iso))
-      if [ "$new_n" != "$cur_n" ] || [ "$want_iso" != "$cur_iso" ]; then
-        if [ "$new_n" -le "$MAX_NODES" ]; then
-          new_mode=shared
-          [ "$want_iso" = 1 ] && new_mode=iso
-          [ "$want_iso" -gt 1 ] && new_mode="iso$want_iso"
-          echo "   과부하[$bad_apps]${sr:+ stress=${sr}rps} → $cur_n/$cur_m → $new_n/$new_mode (공유 $want_shared + 전용 $want_iso)"
-          ./apply.sh "$new_n" "$new_mode" "$((new_n+CAP_MARGIN))" | tail -2
-          did=1
-        else
-          echo "   과부하($bad_apps)이지만 $new_n 대는 상한 $MAX_NODES 초과 — 더 늘릴 수 없다"
-        fi
-      fi
+  cur_n=$(awk '{print $1}' "$STATE" 2>/dev/null); cur_n=${cur_n:-$nodes}
+  cur_m=$(awk '{print $2}' "$STATE" 2>/dev/null); cur_m=${cur_m:-shared}
+  case "$cur_m" in shared) cur_iso=0;; iso) cur_iso=1;; iso*) cur_iso=${cur_m#iso};; *) cur_iso=0;; esac
+  local want_iso=$cur_iso want_shared=$((cur_n-cur_iso)) new_n new_mode
+  [ "$want_shared" -lt 2 ] && want_shared=2
+
+  if [ "$delta" -gt 0 ]; then
+    # stress 는 노드를 사기 전에 먼저 CFS 지분부터 돌려준다 — 0대짜리 대응이라 제일 싸다.
+    if [[ ",$bad," == *,stress,* ]] && [ "$cur_iso" = 0 ] && [ ! -f .stress-req-bumped ]; then
+      echo "   stress 밀림 → cpu.requests 를 ${STRESS_REQ_HI:-600m} 로 (노드 0대)"
+      ./tune_requests.sh "${STRESS_REQ_HI:-600m}" | tail -1
+      : > .stress-req-bumped
+      return 2
+    fi
+    [[ ",$bad," == *,stress,* ]] && want_iso=$((cur_iso+1))
+    if [[ ",$bad," == *,user,* ]] || [[ ",$bad," == *,product,* ]]; then
+      want_shared=$((want_shared+1))
+    fi
+    # 어느 쪽으로도 안 늘었으면(위반 앱이 애매하면) 공유를 늘린다
+    if [ "$want_iso" = "$cur_iso" ] && [ "$want_shared" = "$((cur_n-cur_iso))" ]; then
+      want_shared=$((want_shared+1))
+    fi
+    new_n=$((want_shared+want_iso))
+    [ "$new_n" -gt "$MAX_NODES" ] && { echo "   상한 $MAX_NODES 대 — 더 못 늘린다"; return 0; }
+    cap=$((new_n+CAP_MARGIN))
+  else
+    # ★축소는 상한도 같이 내려야 실제로 줄어든다.
+    #   apply.sh 는 상한이 열려 있으면(CAP>T) NodeClaim 을 회수하지 않는다.
+    #   예전엔 축소 결정을 내려도 상한이 열린 채라 노드가 그대로 남았고,
+    #   그래서 계곡 40분이 평균 4.93대로 유지됐다. 여기서 CAP=T 로 닫는다.
+    if [ "$want_iso" -gt 0 ] && [[ ",$bad," != *,stress,* ]]; then
+      want_iso=$((want_iso-1))
     else
-      echo "   과부하($bad_apps) 감지 — show 모드라 적용 안 함"
+      want_shared=$((want_shared-1)); [ "$want_shared" -lt 2 ] && want_shared=2
     fi
-    [ "$did" = 1 ] && return 2
-    return 0
+    new_n=$((want_shared+want_iso))
+    [ "$new_n" -lt 2 ] && new_n=2
+    [ "$new_n" = "$cur_n" ] && { echo "   더 내릴 곳이 없다"; return 0; }
+    cap=$new_n
   fi
-  recalibrate_curves || true
-  out=$(ask_solver "$traffic") || return 1
-  echo "$out" | tail -7
-  read -r nodes mode <<<"$(pick_of "$out")"
-  score=$(score_of "$out")
-  [ -z "$nodes" ] && { echo "   솔버가 답을 못 냈다"; return 1; }
-
-  # STATE 는 "<하한> <배치> <상한>" 3필드다. 앞 2필드만 비교해야 한다 —
-  # 통째로 비교하면 상한 때문에 절대 같아지지 않아 매번 재적용했다.
-  cur=$(awk '{print $1, $2}' "$STATE" 2>/dev/null || echo "")
-  if [ "$cur" = "$nodes $mode" ]; then
-    echo "   현재 구성과 동일 ($nodes/$mode) — 유지"
-    return 0
-  fi
-  # 구조 변경은 롤아웃을 부른다. 최근에 바꿨으면 참는다.
-  if [ -f "$STATE" ]; then
-    local mt age
-    mt=$(mtime "$STATE"); age=$(( $(date +%s) - ${mt:-0} ))
-    if [ "$age" -lt "$STRUCT_COOLDOWN" ]; then
-      echo "   구조 변경 대기 (${age}초 전에 바꿨다, 최소 ${STRUCT_COOLDOWN}초)"
-      return 0
-    fi
-  fi
-  # ★모델만 믿고 비싸지는 쪽으로 가지 않는다.
-  #   solve.py 는 동거(shared) 모드에서 무거운 앱의 지연을 크게 과대평가한다.
-  #   합산 동시성을 그 앱의 곡선에 그대로 대입하기 때문인데, 요청 하나의 무게가
-  #   앱마다 150배까지 차이난다(stress 227ms vs product 1.5ms).
-  #   그래서 stress 1.2rps 인데도 통과율 0% 로 보고 shared 를 탈락시킨다.
-  #   실제로 이것 때문에 40점 구성(2 shared)이 38점 구성(3 iso)으로 바뀐 적이 있다.
-  #
-  #   여기까지 왔다는 건 위의 과부하 검사에서 SLA 위반이 없었다는 뜻이다.
-  #   증상이 없는데 노드를 늘리거나 user/product 의 코어를 뺏는 변경은 하지 않는다.
-  #   줄이는 방향은 그대로 따른다 — 모델이 과대평가 쪽으로 틀리므로 신뢰도가 높다.
-  local cur_n cur_m cur_shared new_shared
-  cur_n=$(awk '{print $1}' "$STATE" 2>/dev/null); cur_m=$(awk '{print $2}' "$STATE" 2>/dev/null)
-  shared_of() { case "$2" in shared) echo "$1";; iso) echo $(($1-1));; iso*) echo $(($1-${2#iso}));; *) echo "$1";; esac; }
-  if [ "${ALLOW_MODEL_UPSIZE:-0}" != 1 ] && [ -n "${cur_n:-}" ]; then
-    cur_shared=$(shared_of "$cur_n" "${cur_m:-shared}")
-    new_shared=$(shared_of "$nodes" "$mode")
-    if [ "$nodes" -gt "$cur_n" ] || [ "$new_shared" -lt "$cur_shared" ]; then
-      echo "   모델은 $nodes/$mode (예상 $score) 를 권하지만 SLA 위반이 없다 — 유지 ($cur_n/$cur_m)"
-      echo "      비싸지는 변경은 실측 증상이 있을 때만 한다 (풀려면 ALLOW_MODEL_UPSIZE=1)"
-      return 0
-    fi
-  fi
-  if [ "$apply" != "yes" ]; then
-    echo "   추천: $nodes 노드 / $mode (예상 $score) — show 모드라 적용 안 함"
-    return 0
-  fi
-  echo "   구성 변경: ${cur:-미설정} → $nodes/$mode (예상 $score)"
-  # ★상한은 하한까지 좁히지 않는다.
-  #   트래픽은 오르내린다(베이스라인 2rps ↔ 스파이크 22rps, 11배). 상한을 좁히면
-  #   다음 스파이크에 Karpenter 가 못 늘린다. 비용은 구간 '평균'이라, 낮을 때 적게 쓰고
-  #   높을 때 늘리는 쪽이 항상 이긴다 (계속 4대 평균 4.0 vs 오르내리며 평균 3.3).
-  ./apply.sh "$nodes" "$mode" "$((nodes+CAP_MARGIN))" | tail -3
-  echo "$nodes $mode $((nodes+CAP_MARGIN))" > "$STATE"
+  new_mode=shared
+  [ "$want_iso" = 1 ] && new_mode=iso
+  [ "$want_iso" -gt 1 ] && new_mode="iso$want_iso"
+  echo "   $cur_n/$cur_m → $new_n/$new_mode (공유 $want_shared + 전용 $want_iso, 상한 $cap)"
+  ./apply.sh "$new_n" "$new_mode" "$cap" | tail -2
+  return 2
 }
 
 # ── 안정화 확인 ───────────────────────────────────────────────────────────
@@ -370,6 +227,11 @@ prepare() {
   # 지난 회차에서 stress requests 를 올렸다는 표시는 여기서 지운다.
   # 안 지우면 다음 회차가 "이미 올렸다"고 판단해 1단계를 건너뛴다.
   rm -f .stress-req-bumped
+  # ★회차 원장도 여기서만 지운다.
+  #   점수는 회차 '전체'의 누적으로 매겨진다. 그래서 도구도 누적을 들고 있어야
+  #   "이미 벌어둔 비용 여유"와 "남은 구간"을 구분할 수 있다.
+  #   run 루프가 중간에 죽었다 살아나도 원장은 이어져야 하므로 거기서는 절대 안 지운다.
+  rm -f .round-ledger.json
   local traffic
   traffic=$(read_traffic) || true
   if [ -n "${traffic:-}" ] && \
