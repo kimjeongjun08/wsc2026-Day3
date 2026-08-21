@@ -85,7 +85,14 @@ class Runner:
         self.seeded = {"emails": [], "pids": []}
         self.stat = {}          # 분 -> app -> [n, ok, under]
         self.inflight = 0
-        self.max_inflight = 2500
+        # ★동시 연결을 무제한으로 두면 안 된다.
+        #   실측(3회차): 310rps 로 쏘면서 상한 2500 을 걸었더니, 보낸 77,684건 중
+        #   ALB 는 69,092건만 받았다. 11% 가 클라이언트 쪽에서 사라진 것이다.
+        #   그 손실을 '앱이 실패한 것'으로 세는 바람에 회차 점수가 통째로 거짓이 됐다.
+        #   측정기가 자기 손실을 모르면 그 측정은 쓰면 안 된다.
+        self.max_inflight = int(os.environ.get("MAX_INFLIGHT", 600))
+        self.exc = {}          # 예외 종류별 집계
+        self.notsent = 0       # 동시 상한에 걸려 못 보낸 수
 
     def bucket(self, minute, app):
         return self.stat.setdefault(minute, {}).setdefault(app, [0, 0, 0])
@@ -117,9 +124,11 @@ class Runner:
                     if kind == "product_post":
                         self.seeded["pids"].append(json.loads(body)["id"])
                         del self.seeded["pids"][:-500]
-        except Exception:
+        except Exception as e:
             b = self.bucket(minute, app)
             b[0] += 1
+            k = type(e).__name__
+            self.exc[k] = self.exc.get(k, 0) + 1
         finally:
             self.inflight -= 1
 
@@ -136,7 +145,10 @@ class Runner:
     async def run(self):
         import aiohttp
         total_min = self.sched[-1][0]
-        conn = aiohttp.TCPConnector(limit=0, ttl_dns_cache=300)
+        # 연결을 재사용한다. 요청마다 새로 맺으면 포트가 마르고 지연이 연결 비용으로 오염된다.
+        conn = aiohttp.TCPConnector(limit=self.max_inflight,
+                                    limit_per_host=self.max_inflight,
+                                    keepalive_timeout=30, ttl_dns_cache=300)
         async with aiohttp.ClientSession(connector=conn) as sess:
             t_start = time.monotonic()
             tasks = set()
@@ -152,7 +164,8 @@ class Runner:
                     n = int(rps) + (1 if random.random() < (rps % 1) else 0)
                     for _ in range(n):
                         if self.inflight >= self.max_inflight:
-                            break
+                            self.notsent += 1
+                            continue
                         t = asyncio.create_task(self.fire(sess, kind, minute))
                         tasks.add(t)
                         t.add_done_callback(tasks.discard)
@@ -168,8 +181,8 @@ class Runner:
         self.flush()
 
     def flush(self):
-        json.dump({"stat": self.stat, "nodes": getattr(self, "nodes", {})},
-                  open(self.out, "w"))
+        json.dump({"stat": self.stat, "nodes": getattr(self, "nodes", {}),
+                   "exc": self.exc, "notsent": self.notsent}, open(self.out, "w"))
 
     def report(self, minute):
         if getattr(self, "_last", None) == minute:
@@ -230,6 +243,20 @@ def grade(path):
     print(f"  비정상 {s['abnormal']:.1f}/4  고가용성 {s['availability']:.1f}/12  "
           f"성능 {s['performance']:.1f}/12  비용 {s['cost']:.1f}/12")
     print(f"  → {s['total']:.1f}/40" + ("   ★게이트(통과율 30% 미만)" if s["gated"] else ""))
+
+    # ★측정기가 스스로를 검증한다.
+    #   클라이언트 쪽에서 사라진 요청이 많으면 그 회차의 점수는 앱 성능이 아니라
+    #   내 부하 발생기의 한계를 잰 것이다. 그런 숫자는 쓰면 안 된다.
+    exc, ns = d.get("exc", {}), d.get("notsent", 0)
+    sent = sum(t[0] for t in tot.values())
+    lost = sum(exc.values()) + ns
+    if lost:
+        print(f"\n  ※ 클라이언트 손실 {lost}건 / 보낸 {sent}건 ({100*lost/max(1,sent):.1f}%)"
+              + ("  " + ", ".join(f"{k}={v}" for k, v in sorted(exc.items())) if exc else "")
+              + (f", 동시상한에 걸려 못 보냄={ns}" if ns else ""))
+        if lost > sent * 0.02:
+            print("  ★ 이 회차의 점수는 쓰지 마라 — 앱이 아니라 부하 발생기의 한계를 잰 것이다.")
+            print("     MAX_INFLIGHT 를 낮추거나, 부하를 여러 대에서 나눠 쏴라.")
     return s
 
 

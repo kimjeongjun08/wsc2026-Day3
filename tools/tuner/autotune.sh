@@ -148,6 +148,20 @@ once() {
     if [ "$want_iso" = "$cur_iso" ] && [ "$want_shared" = "$((cur_n-cur_iso))" ]; then
       want_shared=$((want_shared+1))
     fi
+    # ★한 주기에 순증은 1대까지.
+    #   stress 와 user/product 가 동시에 밀리면 예전엔 둘 다 처리해 4대 → 6대로
+    #   두 칸을 한 번에 뛰었다(실측 3회차). 노드 1대는 비용 2점이라 두 칸이면 4점이고,
+    #   효과를 재보기도 전에 지불하는 셈이다. 한 칸씩 사고 3분 뒤 채점한다.
+    #   둘 다 밀리면 게이트에 가까운 쪽(stress)을 먼저 산다 — 비용 12점이 걸려 있다.
+    if [ "$((want_shared+want_iso))" -gt "$((cur_n+1))" ]; then
+      if [ "$want_iso" -gt "$cur_iso" ]; then
+        want_shared=$((cur_n-cur_iso))          # stress 전용만 +1
+      else
+        want_iso=$cur_iso                        # 공유만 +1
+        want_shared=$((cur_n-cur_iso+1))
+      fi
+      echo "   (한 주기 순증은 1대까지 — 나머지는 다음 주기에)"
+    fi
     new_n=$((want_shared+want_iso))
     [ "$new_n" -gt "$MAX_NODES" ] && { echo "   상한 $MAX_NODES 대 — 더 못 늘린다"; return 0; }
     cap=$((new_n+CAP_MARGIN))

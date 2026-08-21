@@ -363,10 +363,15 @@ def main():
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, a.ledger)
-    # 배치 결정에 쓸 근거도 같이 넘긴다 — 어느 앱이 밀리는지에 따라
-    # 노드를 '공유'로 붙일지 'stress 전용'으로 붙일지가 갈린다.
-    bad = [x for x in score.APPS
-           if perf.get(x) is not None and perf[x] < (90.0 if x != "stress" else 90.0)]
+    # 배치 결정에 쓸 근거도 같이 넘긴다.
+    # ★판단과 배치가 같은 근거를 봐야 한다.
+    #   예전엔 판단은 below_now(실측 우선)로 하고, 배치용 BAD 는 CloudWatch 만 봤다.
+    #   그래서 "stress 때문에 늘린다"고 결정해놓고 배치는 stress 를 모른 채
+    #   공유 노드를 붙였다(실측 3회차: 3/shared → 4/shared).
+    #   stress 는 전용 노드로 빼야 CFS 지분을 확보하는데 그게 영영 안 일어난다.
+    _pb, _po, _ = probe_view(probe)
+    _live = [x for x in score.APPS if perf.get(x) is not None]
+    bad = below_now(perf, _live, _pb, probe)
     worst = min((x for x in score.APPS if perf.get(x) is not None),
                 key=lambda x: perf[x], default="")
     print(f"BAD={','.join(bad)}")

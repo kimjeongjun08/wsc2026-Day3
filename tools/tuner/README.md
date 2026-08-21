@@ -362,3 +362,39 @@ autotune.sh       그걸 배치(공유 / stress 전용)로 옮겨 apply.sh 를 �
 ```
 
 실측 회차 한 번은 38분 + 인프라 비용이다. 분기 검증은 `check` 에서 끝낸다.
+
+## 환경과 준비물
+
+대회 PC 는 Windows + WSL 이다. **2026-08-21 에 실제 WSL2 에서 검증했다** —
+`microsoft-standard-WSL2`, bash 5.2.21, python 3.12.3, `timeout` 있음, `mapfile` 빌트인.
+오프라인 검증 전부 통과, `GO.sh doctor` 7개 항목 전부 통과, probe 2.5초.
+
+### 튜너 본체는 추가 설치가 필요 없다
+
+`GO.sh` · `autotune.sh` · `decide.py` · `score.py` · `probe.sh` · `alb_snapshot.sh` ·
+`apply.sh` · `doctor.sh` 는 표준 라이브러리와 아래 두 개만 쓴다.
+
+| 필요한 것 | 확인 |
+|---|---|
+| `aws` CLI v2 | `aws sts get-caller-identity` |
+| `kubectl` | `kubectl get nodes` |
+| `python3` (표준 라이브러리만) | `python3 -V` |
+| `curl` | probe 가 쓴다 |
+
+### 연습용 부하 발생기만 aiohttp 가 필요하다
+
+`practice/loadcurve.py` (채점기 없이 회차를 돌리고 채점하는 도구) 하나만
+`aiohttp` 를 쓴다. 없으면 이것만 못 돌고 튜너는 멀쩡히 돈다.
+
+```bash
+python3 -m pip install --user aiohttp      # pip3 명령이 없으면 이렇게
+```
+
+> WSL 에 `pip3` 실행파일이 없는 경우가 있다. `python3 -m pip` 로 부르면 된다.
+> 그것도 없으면: `sudo apt install -y python3-pip`
+
+### macOS 에서도 돌지만 주의
+
+개발·검증용으로 macOS 에서도 돈다. 다만 기본 bash 가 3.2 이고 `timeout` 이 없어서,
+도구 안에서 각각 우회하고 있다(`probe.sh` 는 `mapfile` 대신 read 루프,
+`common.sh` 는 `timeout` 대신 perl). **대회 실행 환경은 WSL 이 기준이다.**
