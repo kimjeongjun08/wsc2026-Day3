@@ -148,6 +148,16 @@ status)
   kubectl get nodes -L role --no-headers 2>/dev/null | awk '{print "  ", $1, $6}'
   echo "=== 파드 ==="
   kubectl -n apdev get pods --no-headers 2>/dev/null | awk '{split($1,a,"-"); c[a[1]]++} END{for(k in c) print "  ", k, c[k]"개"}'
+  # ★파드가 ALB 에서 빠지거나 재시작하고 있는지 본다.
+  #   포화 구간에서 헬스체크가 타임아웃하면 멀쩡한 파드가 빠진다 — 용량이 제일
+  #   필요한 순간에 용량이 줄고, 성능 손실이 가용성 손실로 번진다.
+  #   재시작 카운트가 0 이 아니거나 Ready 가 아닌 파드가 있으면 그게 원인일 수 있다.
+  echo "=== 파드 안정성 (재시작 / 준비) ==="
+  kubectl -n apdev get pods --no-headers -o custom-columns=\
+'N:.metadata.name,R:.status.containerStatuses[0].restartCount,RD:.status.containerStatuses[0].ready' 2>/dev/null \
+    | awk '{if($2!="0"||$3!="true") print "   [!]", $0; else ok++} END{if(ok) print "   [O] 정상 파드", ok"개 (재시작 0)"}'
+  kubectl -n apdev get events --sort-by=.lastTimestamp 2>/dev/null \
+    | grep -Ei "Unhealthy|Killing|BackOff" | tail -5 | sed 's/^/   /'
   echo "=== 지금 트래픽과 추천 ==="
   ./autotune.sh show 2>&1 | tail -8
   echo "=== 안정화 ==="
