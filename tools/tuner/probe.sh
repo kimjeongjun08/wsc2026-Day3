@@ -8,8 +8,14 @@
 #   그 구간의 요청은 이미 SLA 를 넘긴 뒤다. 성능 점수는 '요청' 가중이라 되돌릴 수 없다.
 #
 # 어떻게:
-#   CloudFront 를 건너뛰고 ALB 로 직접 GET 을 몇 개 쏴서 왕복 시간을 잰다.
-#   · CloudFront 를 타면 캐시에 맞아 파드 상태가 안 보인다. 우리가 알고 싶은 건 파드다.
+#   채점기가 때리는 그 경로(CloudFront)로 GET 을 몇 개 쏴서 왕복 시간을 잰다.
+#   ★예전엔 ALB 로 직접 쐈다. 캐시를 피하려고. 그런데 그러면 CloudFront 구간이
+#     통째로 빠진다. 실측(2026-08-21): 같은 요청이 ALB 직행 p90 95ms,
+#     CloudFront 경유 p90 195ms 였다 — SLA 200ms 기준으로 여유와 벼랑 끝의 차이다.
+#     그래서 probe 는 "100% 통과"라고 보고했는데 실제 채점은 78% 였다.
+#     도구가 거짓 안심을 하고 증설을 미뤘다.
+#   · 캐시는 쿼리 파라미터를 매번 다르게 넣어 피한다. CloudFront 는 키가 다르면
+#     캐시하지 않고 그대로 전달한다. 캐시도 피하고 경로도 온전하다.
 #   · GET 만 쓴다. 과제지가 임의 데이터 삽입을 경계하므로 POST 는 안 넣는다.
 #   · 앱당 기본 10개, 총 20개 남짓 — 피크 312rps 옆에서 무시할 수 있는 양이다.
 #   · 채점은 주입기가 자기 요청만 세므로 이 요청은 점수에 안 들어간다.
@@ -27,12 +33,21 @@ ALB_NAME=${ALB_NAME:-apdev-alb}
 N=${PROBE_N:-15}
 TMO=${PROBE_TIMEOUT:-2}
 
-ALB=${ALB_DNS:-}
-if [ -z "$ALB" ]; then
-  ALB=$(aws elbv2 describe-load-balancers --region "$REGION" --names "$ALB_NAME" \
-        --query 'LoadBalancers[0].DNSName' --output text 2>/dev/null)
+# 채점 대상 엔드포인트(CloudFront). ENDPOINT 로 넘기면 그걸 쓴다.
+TARGET=${ENDPOINT:-}
+if [ -z "$TARGET" ]; then
+  TARGET=$(aws cloudfront list-distributions \
+    --query "DistributionList.Items[?contains(Origins.Items[0].DomainName, '${ORIGIN_HINT:-apdev}')].DomainName | [0]" \
+    --output text 2>/dev/null)
 fi
-[ -z "$ALB" ] || [ "$ALB" = None ] && { echo '{}'; exit 1; }
+# CloudFront 를 못 찾으면 ALB 로라도 잰다(값은 낙관적이지만 없는 것보단 낫다)
+if [ -z "$TARGET" ] || [ "$TARGET" = None ]; then
+  TARGET=$(aws elbv2 describe-load-balancers --region "$REGION" --names "$ALB_NAME" \
+           --query 'LoadBalancers[0].DNSName' --output text 2>/dev/null)
+  echo "probe: CloudFront 를 못 찾아 ALB 로 잰다 — 지연이 낙관적으로 나온다" >&2
+fi
+[ -z "$TARGET" ] || [ "$TARGET" = None ] && { echo '{}'; exit 1; }
+ALB=${TARGET#http://}; ALB=${ALB#https://}; ALB=${ALB%%/*}
 
 hex() { od -An -tx1 -N16 /dev/urandom | tr -d ' \n'; }
 
