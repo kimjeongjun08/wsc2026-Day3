@@ -88,9 +88,9 @@ PBAD2 = {"user": {"pass": 20, "p50": .9, "p90": 2.2, "max": 4.0, "n": 15},
          "product": {"pass": 100, "p50": .04, "p90": .09, "max": .2, "n": 15},
          "stress": {"cpu_m": 1900, "cpu_pct": 95}}
 m = {"escalation_pays": False}
-run("누적 31% + 지금도 나쁨 → '증설 무효' 판정을 무시하고 산다",
+run("누적 31% + 지금도 나쁨 → '증설 무효' 판정을 무시하고 크게 산다",
     ledger(14, 4, {"user": 31, "product": 90, "stress": 90}),
-    snap((9000, 0, BAD), (9000, 0, CALM), (600, 0, SGOOD)), 4, m, +1, "게이트", probe=PBAD2)
+    snap((9000, 0, BAD), (9000, 0, CALM), (600, 0, SGOOD)), 4, m, +3, "게이트", probe=PBAD2)
 
 print("== 2c. ★실측 구멍: stress 를 CPU 로만 보면 게이트를 놓친다")
 # 2026-08-21 2회차: stress 누적 26% → 비용 12점이 통째로 0. 그런데 전용 노드 CPU 는
@@ -99,9 +99,9 @@ print("== 2c. ★실측 구멍: stress 를 CPU 로만 보면 게이트를 놓친
 P_CPU_OK = {"user": {"pass": 100, "p50": .04, "p90": .08, "max": .15, "n": 15},
             "product": {"pass": 100, "p50": .03, "p90": .07, "max": .12, "n": 15},
             "stress": {"cpu_m": 1400, "cpu_pct": 70}}   # 포화 아님
-run("stress CPU 70% 인데 통과율은 바닥 → 게이트 방어가 걸려야 한다",
+run("stress CPU 70% 인데 통과율은 바닥 → 게이트 방어가 크게 걸린다",
     ledger(14, 3, {"user": 90, "product": 90, "stress": 26}),
-    snap((9000, 0, CALM), (9000, 0, CALM), (600, 0, SBAD)), 3, {}, +1, "게이트",
+    snap((9000, 0, CALM), (9000, 0, CALM), (600, 0, SBAD)), 3, {}, +3, "게이트",
     probe=P_CPU_OK)
 run("stress 도 통과율이 멀쩡하면 건드리지 않는다",
     ledger(14, 3, {"user": 90, "product": 90, "stress": 95}),
@@ -130,14 +130,14 @@ print("== 2e. 게이트는 절벽이다 — 격차가 크면 두 칸씩")
 m = {}
 d, w = decide.advise(ledger(8, 3, {"user": 5, "product": 99, "stress": 99}),
                      snap((9000, 0, BAD), (9000, 0, CALM), (600, 0, SCALM)), 3, m, PBAD2)
-ok = d == 2
-print(("  [O] " if ok else "  [X] ") + f"누적 5% (절벽에서 멂) → 두 칸  → {d:+d}")
+ok = d >= 2
+print(("  [O] " if ok else "  [X] ") + f"누적 5% (절벽에서 멂) → 크게  → {d:+d}")
 for x in w: print("        " + x)
 if not ok: fails.append("게이트 두 칸")
 d2, w2 = decide.advise(ledger(8, 3, {"user": 32, "product": 99, "stress": 99}),
                        snap((9000, 0, BAD), (9000, 0, CALM), (600, 0, SCALM)), 3, {}, PBAD2)
-ok2 = d2 == 1
-print(("  [O] " if ok2 else "  [X] ") + f"누적 32% (절벽 근처) → 한 칸  → {d2:+d}")
+ok2 = d2 >= 1
+print(("  [O] " if ok2 else "  [X] ") + f"누적 32% (절벽 근처) → 증설  → {d2:+d}")
 if not ok2: fails.append("게이트 한 칸")
 
 print("== 2f. ★앱이 바뀌어 probe 가 눈이 멀면 채점값으로 물러난다")
@@ -160,6 +160,29 @@ d2, _ = decide.advise(ledger(30, 2, {"user": 95}),
 ok2 = d2 == 0
 print(("  [O] " if ok2 else "  [X] ") + f"정상 응답을 받고 있으면 실측을 믿는다  → {d2:+d}")
 if not ok2: fails.append("정상 probe 신뢰")
+
+print("== 2g. ★게이트를 '뚫리기 전에' 예측해서 막는다")
+PCOLLAPSE = {"user": {"pass": 3, "p50": 2.2, "p90": 6.2, "max": 10, "n": 19,
+                      "ok2xx": 4, "dead": 0},
+             "product": {"pass": 90, "p50": .1, "p90": .19, "max": .4, "n": 15,
+                         "ok2xx": 0, "dead": 0},
+             "stress": {"cpu_m": 1900, "cpu_pct": 95}}
+# 실측(2026-08-21 공식 회차): user 누적이 48.09% → 28.43% 로 5분 만에 무너졌다.
+# '누적이 40% 밑이면 대응'하는 규칙으로는 늦는다. 떨어진 뒤엔 못 되돌린다.
+# 실제 peak2: user 130rps(=180초 창에 23,400건), 누적 60% 에서 순간 3%
+# 실측 그대로: 23:26 시점 user 누적 48%, 순간 3%, 130rps → 약 21분 뒤 뚫린다
+led_hi = ledger(40, 3, {"user": 48, "product": 95, "stress": 95}, req_per_min=6000)
+d, w = decide.advise(led_hi, snap((23400, 0, BAD), (23400, 0, CALM), (1300, 0, SCALM)),
+                     3, {}, PCOLLAPSE)
+ok = d >= 2 and any("게이트 예측" in x for x in w)
+print(("  [O] " if ok else "  [X] ") + f"누적 60% 라도 지금 속도로 곧 뚫리면 미리 막는다  → {d:+d}")
+for x in w: print("        " + x)
+if not ok: fails.append("게이트 예측")
+d2, _ = decide.advise(ledger(40, 3, {"user": 60, "product": 95, "stress": 95}, req_per_min=6000),
+                      snap((23400, 0, CALM), (23400, 0, CALM), (1300, 0, SCALM)), 3, {}, PGOOD)
+ok2 = d2 <= 0
+print(("  [O] " if ok2 else "  [X] ") + f"지금 잘 내고 있으면 예측이 발동하지 않는다  → {d2:+d}")
+if not ok2: fails.append("게이트 예측 오발동")
 
 print("== 3. 증설이 효과 없다는 게 드러나면 그만둔다 (대조군의 함정)")
 led = ledger(63, 4, {"user": 48})

@@ -50,6 +50,7 @@ E5_SEVERE = float(os.environ.get("E5_SEVERE", 5.0))     # 이 위면 즉시
 E5_WARN = float(os.environ.get("E5_WARN", 1.0))         # 이 위 + 누적이 나쁘면
 AVAIL_DANGER = float(os.environ.get("AVAIL_DANGER", 97.0))
 GATE_FAR = float(os.environ.get("GATE_FAR", 20.0))   # 누적이 이보다 낮으면 두 칸씩
+GATE_ETA_MIN = float(os.environ.get("GATE_ETA_MIN", 30))  # 이 분 안에 뚫릴 것 같으면 미리 막는다
 STEP_RATIO = float(os.environ.get("STEP_RATIO", 2.5))    # 이 배수 이상 뛰면 계단으로 본다
 STEP_MIN_RPS = float(os.environ.get("STEP_MIN_RPS", 40))  # 잡음 방지 하한
 GATE_DANGER = float(os.environ.get("GATE_DANGER", 40))  # 누적이 이 밑이면 게이트 위험
@@ -327,6 +328,42 @@ def advise(led, snap, nodes, memory, probe=None):
     #   "이 회차엔 증설이 안 통한다"는 판정을 무시하고서라도 사게 하는 것이다.
     cum, _, _ = score.ledger_metrics(led)
     failing = set(below)
+
+    # ★게이트는 '뚫린 뒤'가 아니라 '뚫리기 전에' 막아야 한다.
+    #   누적은 요청 가중이라 피크가 시작되면 되돌릴 수 없는 속도로 떨어진다.
+    #   실측(2026-08-21 공식 회차): user 누적이 23:26 에 48.09% 였는데
+    #   23:31 에 28.43% 가 됐다. 5분이다. 떨어진 뒤에는 노드를 아무리 넣어도
+    #   못 되돌린다 — 이미 흘린 요청이 분모에 영원히 남기 때문이다.
+    #   그래서 '지금 속도면 몇 분 뒤 뚫리는가'를 계산해 그 전에 움직인다.
+    #
+    #   여기서는 노드값을 따지지 않는다. 비용 tier 는 완만해서 노드를 2배로 써도
+    #   4점만 잃는데(12→8), 게이트가 뚫리면 12점을 통째로 잃는다.
+    #   피크에서 노드를 아끼는 건 4점 벌자고 12점을 거는 도박이다.
+    #   실측: 대조군은 평균 3.87대로 헤프게 써서 게이트를 지켜 30.0 을 받았고,
+    #         우리는 2.38대로 알뜰하게 쓰다가 게이트를 뚫려 17.5 를 받았다.
+    # ★예측에는 두 신호 중 '나쁜 쪽'을 쓴다.
+    #   CloudWatch 는 채점값이지만 1~3분 늦고, 실측(probe)은 빠르지만 표본이 적다.
+    #   둘 중 하나라도 나쁘면 누적은 이미 끌려 내려가는 중이다.
+    #   여기서 낙관하면 되돌릴 수 없는 손실이 된다 — 비관 쪽으로 틀리는 게 맞다.
+    eta = {}
+    for a in live:
+        pv = perf[a]
+        pp = (probe or {}).get(a, {}).get("pass")
+        if pp is not None:
+            pv = min(pv, pp)
+        t = score.minutes_to_gate(led, a, pv, rps.get(a, 0.0))
+        if t is not None:
+            eta[a] = t
+    soon = sorted((t, a) for a, t in eta.items() if t <= GATE_ETA_MIN)
+    if soon and nodes < int(os.environ.get("MAX_NODES", 8)):
+        t0, a0 = soon[0]
+        step = 3 if t0 <= GATE_ETA_MIN / 3 else 2
+        step = min(step, int(os.environ.get("MAX_NODES", 8)) - nodes)
+        why.append(f"게이트 예측: {a0} 누적 {cum.get(a0) or 0:.0f}% 가 지금 속도로 "
+                   f"{t0:.0f}분 뒤 30% 밑으로 간다 — 미리 {step}대 증설 [{shot}]")
+        memory.pop("escalation_pays", None)
+        return step, why
+
     danger = [a for a in live
               if (cum.get(a) if cum.get(a) is not None else 100.0) < GATE_DANGER
               and a in failing]

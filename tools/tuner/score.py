@@ -123,6 +123,39 @@ def ledger_metrics(led):
     )
 
 
+def minutes_to_gate(led, app, perf_now_pct, rps_now, gate=PERF_GATE):
+    """지금 속도가 유지되면 몇 분 뒤 누적 통과율이 게이트 밑으로 떨어지는가.
+
+    ★회차 길이를 몰라도 계산된다. 지금 관측만 쓴다.
+      누적 요청 R, 누적 통과 U, 분당 요청 r, 현재 통과율 p 라 할 때
+      T분 뒤 누적 = (U + r·T·p) / (R + r·T)
+      이게 gate 가 되는 T 를 풀면  T = (gate·R − U) / (r·(p − gate))
+
+      왜 필요한가 — 누적은 '요청 가중'이라 피크가 시작되면 되돌릴 수 없는 속도로
+      떨어진다. 실측(2026-08-21 공식 회차): 23:26 에 48.09% 였던 user 누적이
+      23:31 에 28.43% 가 됐다. 5분이다. '누적이 40% 밑으로 떨어지면 대응'하는
+      규칙으로는 이미 늦는다 — 떨어진 뒤에는 노드를 아무리 넣어도 못 되돌린다.
+      비용 12점이 통째로 걸려 있으므로 '떨어지기 전에' 알아야 한다.
+
+    반환: 남은 분(양수) / None(안 뚫림 또는 계산 불가)
+    """
+    R = led["req"].get(app, 0.0)
+    U = led["under"].get(app, 0.0)
+    if R <= 0 or rps_now <= 0 or perf_now_pct is None:
+        return None
+    g = gate / 100.0
+    p = perf_now_pct / 100.0
+    if p >= g:
+        return None                    # 지금 속도면 누적이 올라간다
+    r = rps_now * 60.0                 # 분당 요청
+    num = g * R - U
+    den = r * (p - g)                  # 음수
+    if num >= 0:                       # 이미 게이트 밑
+        return 0.0
+    t = num / den
+    return t if t >= 0 else 0.0
+
+
 # ── 노드 1대의 값어치 ────────────────────────────────────────────────────
 def cost_delta(led, delta_nodes, remain_min, hold_min=None):
     """노드를 delta 만큼 더(덜) 쓰면 비용 점수가 얼마나 변하나.
