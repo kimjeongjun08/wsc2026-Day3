@@ -1,0 +1,71 @@
+{
+  "_doc": "현재 앱 API (SSOT). 경로 · 메서드 · api(쿼리/바디 필드)만 담는다. 변경 시 여기만 고치고 apply_change.py 실행. (content_type/multipart/정규식 같은 WAF 구현 디테일은 spec.py 관례로 자동 처리.)",
+  "prefixes": [
+    "/images/"
+  ],
+  "apps": {
+    "user": {
+      "path": "/v1/user",
+      "methods": {
+        "GET": {
+          "query": [
+            "email",
+            "requestid",
+            "uuid"
+          ]
+        },
+        "POST": {
+          "body": [
+            "requestid",
+            "uuid",
+            "username",
+            "email"
+          ]
+        }
+      }
+    },
+    "product": {
+      "path": "/v1/product",
+      "methods": {
+        "GET": {
+          "query": [
+            "id"
+          ]
+        },
+        "POST": {
+          "body": [
+            "id",
+            "name",
+            "price",
+            "requestid",
+            "uuid"
+          ]
+        },
+        "PUT": {
+          "query": [
+            "requestid",
+            "uuid"
+          ]
+        }
+      }
+    },
+    "stress": {
+      "path": "/v1/stress",
+      "methods": {
+        "POST": {
+          "body": [
+            "length",
+            "requestid",
+            "uuid"
+          ]
+        }
+      }
+    }
+  },
+  "static": {
+    "images": {
+      "path_prefix": "/images/",
+      "method": "GET"
+    }
+  }
+}

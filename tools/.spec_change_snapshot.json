@@ -1,0 +1,41 @@
+{
+  "paths": {
+    "user": "/v1/user",
+    "product": "/v1/product",
+    "stress": "/v1/stress"
+  },
+  "get_query": {
+    "user": {
+      "email": "email"
+    },
+    "product": {
+      "id": "id"
+    },
+    "stress": {}
+  },
+  "post_body": {
+    "user": [
+      "username",
+      "@"
+    ],
+    "product": [
+      "name",
+      "price"
+    ],
+    "stress": [
+      "length"
+    ]
+  },
+  "put": {
+    "user": false,
+    "product": true,
+    "stress": false
+  },
+  "regex": {
+    "email": "^[a-zA-Z0-9._%+=-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$",
+    "id": "^[a-zA-Z0-9_.:-]+$"
+  },
+  "prefixes": [
+    "/images/"
+  ]
+}

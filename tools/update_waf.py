@@ -17,7 +17,10 @@ update_waf.py — '헤더 이름' 화이트리스트 (커버리지 게이팅판)
   · 헤더 '이름'만 검사(값 아님) → 정상 헤더값에 우연히 키워드 껴도 자폭 안 함.
   · enforce는 '충분히 관측된 (메서드,경로)'에만 적용 → 관측 안 된 정상요청은 통과.
 
-사용법: python update_waf.py [--auto] [--wait 분]   (해제: python update_waf.py --remove)
+사용법: python update_waf.py [--auto] [--min 분(기본3)] [--wait 분(최대,기본20)]
+        · 최소 --min 분 동안은 6개 조합을 다 봐도 계속 수집(더 많은 헤더/UA 확보) 후 확정.
+        · --min 안에 다 못 보면 다 볼 때까지(최대 --wait 까지) 계속.
+        해제: python update_waf.py --remove
 """
 import boto3, json, sys, time
 from datetime import datetime, timedelta, timezone
@@ -34,6 +37,9 @@ SCOPE = "CLOUDFRONT"
 
 SAMPLE_EVERY = 30          # 폴링 주기(초)
 MAX_WAIT = 1200            # 커버리지 최대 대기(초). 이 안에 다 안 오면 본 것만 enforce.
+MIN_WAIT = 180             # ★최소 수집 시간(초, 기본 3분). 6개 조합을 다 봐도 이 시간까지는 계속 받아
+                           #   더 많은 헤더/UA 를 모은 뒤 확정한다(작은 표본으로 성급히 룰 만들면
+                           #   나중에 온 정상 헤더/UA 를 못 봐서 차단할 위험 → 그걸 줄인다).
 
 # enforce 대상 기대 (메서드, 경로) 조합. 이게 다 관측되면 룰 확정.
 #   images/healthcheck는 헤더 다양성 커서 제외(enforce 안 함).
@@ -83,12 +89,13 @@ def _norm_path(uri):
     return p
 
 
-def collect_until_covered(waf, acl_arn, allow_metrics, max_wait):
-    """기대 (메서드,경로)를 다 볼 때까지(또는 max_wait까지) 샘플링하며 조합별 헤더 이름 수집.
-       반환: seen = {(method,path): set(header_names)}"""
+def collect_until_covered(waf, acl_arn, allow_metrics, max_wait, min_wait=MIN_WAIT):
+    """기대 (메서드,경로)를 다 볼 때까지 + '최소 min_wait 초' 까지 샘플링하며 조합별 헤더 수집.
+       종료 = (모든 조합 관측 AND 최소시간 경과) 또는 max_wait 도달.
+       반환: seen = {(method,path): {...}}"""
     if not allow_metrics:
         print("⚠ ACL에 Allow 룰이 없어 샘플 대상이 없음."); return {}
-    print(f"⏳ 요청 조합 커버리지 수집 (최대 {max_wait//60}분, {SAMPLE_EVERY}초 간격)")
+    print(f"⏳ 요청 조합 커버리지 수집 (최소 {min_wait//60}분 / 최대 {max_wait//60}분, {SAMPLE_EVERY}초 간격)")
     print(f"   대상 조합: {[f'{m} {p}' for m,p in EXPECTED]}")
     seen = {}
     start = time.time()
@@ -124,13 +131,17 @@ def collect_until_covered(waf, acl_arn, allow_metrics, max_wait):
         covered = [e for e in EXPECTED if e in seen]
         missing = [e for e in EXPECTED if e not in seen]
         elapsed = int(time.time() - start)
-        print(f"  [{elapsed:>4}s] 커버 {len(covered)}/{len(EXPECTED)} | 남은: {[f'{m} {p}' for m,p in missing] or '없음 ✅'}")
-        if not missing:
-            print("  ✅ 모든 기대 조합 관측 완료 → 룰 생성")
+        min_ok = elapsed >= min_wait
+        note = "" if (missing or min_ok) else f" | 다 봤지만 최소 {min_wait//60}분까지 수집 계속"
+        print(f"  [{elapsed:>4}s] 커버 {len(covered)}/{len(EXPECTED)} | 남은: {[f'{m} {p}' for m,p in missing] or '없음 ✅'}{note}")
+        # 종료: 모든 조합 관측 + 최소시간 경과. (다 봐도 최소시간 전이면 계속 받는다.)
+        if not missing and min_ok:
+            print(f"  ✅ 모든 조합 관측 + 최소 {min_wait//60}분 경과 → 룰 생성")
             return seen
         if elapsed >= max_wait:
-            print(f"  ⏱ 시간 상한 도달 → 관측된 {len(covered)}개 조합만 enforce, 미관측 조합은 면제(안 막음)")
+            print(f"  ⏱ 시간 상한({max_wait//60}분) 도달 → 관측된 {len(covered)}개 조합만 enforce, 미관측은 면제(안 막음)")
             return seen
+        time.sleep(SAMPLE_EVERY)   # ★다음 폴링까지 대기(없으면 busy-loop 로 최소시간을 못 채우고 API 폭주)
 
 
 def build_header_rule(enforce_pairs, allowed_headers, allowed_values):
@@ -218,6 +229,13 @@ def main():
             max_wait = int(sys.argv[sys.argv.index("--wait") + 1]) * 60
         except (ValueError, IndexError):
             pass
+    min_wait = MIN_WAIT
+    if "--min" in sys.argv:
+        try:
+            min_wait = int(sys.argv[sys.argv.index("--min") + 1]) * 60
+        except (ValueError, IndexError):
+            pass
+    min_wait = min(min_wait, max_wait)   # 최소는 최대를 못 넘는다
 
     waf = boto3.client("wafv2", region_name=REGION)
     acl_id, acl_arn = get_acl(waf)
@@ -225,7 +243,7 @@ def main():
     print("=== 헤더 화이트리스트 (커버리지 게이팅) ===")
 
     metrics = get_allow_metrics(waf, acl_id)
-    seen = collect_until_covered(waf, acl_arn, metrics, max_wait)
+    seen = collect_until_covered(waf, acl_arn, metrics, max_wait, min_wait)
 
     enforce_pairs = [e for e in EXPECTED if e in seen]   # 관측된 기대 조합만 enforce
     if not enforce_pairs:

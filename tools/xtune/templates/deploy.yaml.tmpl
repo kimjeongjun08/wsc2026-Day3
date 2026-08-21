@@ -1,0 +1,67 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: __APP__
+  namespace: __NS__
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: __APP__
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: __APP__
+    spec:
+      terminationGracePeriodSeconds: 35
+      priorityClassName: high-priority
+      dnsConfig:
+        options:
+          - name: ndots
+            value: "2"
+      # ★배치(nodeSelector/toleration)는 넣지 않는다 — xtune apply 가 측정 후 넣는다
+      #   (pack-app/pack-stress/iso). 여기서 넣으면 원본 baseline 노드 회수와 꼬일 수 있다.
+      #   이 상태로 apply 하면 X 는 apdev-pool(공유)에 뜨므로, 반드시 measure 후 apply 로 고정할 것.
+      containers:
+        - name: __APP__
+          image: __IMAGE__
+          ports:
+            - containerPort: __PORT__
+          envFrom:
+            - configMapRef:
+                name: app-config
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 5"]
+          startupProbe:
+            httpGet:
+              path: __HEALTH__
+              port: __PORT__
+            failureThreshold: 20
+            periodSeconds: 1
+          readinessProbe:
+            httpGet:
+              path: __HEALTH__
+              port: __PORT__
+            periodSeconds: 1
+            failureThreshold: 2
+            successThreshold: 1
+          livenessProbe:
+            httpGet:
+              path: __HEALTH__
+              port: __PORT__
+            periodSeconds: 30
+            failureThreshold: 5
+          # ★초기값(임시). xtune measure→recommend→apply 가 실측으로 재확정한다.
+          resources:
+            requests:
+              cpu: __REQ__
+              memory: 48Mi
+            limits:
+              memory: 256Mi

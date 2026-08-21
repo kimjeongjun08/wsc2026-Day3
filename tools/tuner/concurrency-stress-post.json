@@ -1,0 +1,49 @@
+{
+  "app": "stress",
+  "verb": "post",
+  "vcpu_per_pod_node": 2,
+  "points": [
+    {
+      "concurrency": 1,
+      "p50_ms": 227.3,
+      "p90_ms": 357.0,
+      "rps": 3.4,
+      "failed": 0
+    },
+    {
+      "concurrency": 2,
+      "p50_ms": 459.9,
+      "p90_ms": 1095.8,
+      "rps": 3.5,
+      "failed": 0
+    },
+    {
+      "concurrency": 4,
+      "p50_ms": 809.3,
+      "p90_ms": 1522.9,
+      "rps": 4.6,
+      "failed": 0
+    },
+    {
+      "concurrency": 8,
+      "p50_ms": 1423.1,
+      "p90_ms": 2070.7,
+      "rps": 4.9,
+      "failed": 0
+    },
+    {
+      "concurrency": 16,
+      "p50_ms": 2664.8,
+      "p90_ms": 4172.5,
+      "rps": 6.1,
+      "failed": 0
+    },
+    {
+      "concurrency": 32,
+      "p50_ms": 5513.0,
+      "p90_ms": 8115.8,
+      "rps": 7.0,
+      "failed": 0
+    }
+  ]
+}

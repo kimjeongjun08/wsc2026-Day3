@@ -1,0 +1,14 @@
+apiVersion: elbv2.k8s.aws/v1beta1
+kind: TargetGroupBinding
+metadata:
+  name: __APP__-tgb
+  namespace: __NS__
+spec:
+  serviceRef:
+    name: __APP__-svc
+    port: __PORT__
+  # __TG_ARN__ 은 terraform apply 로 target group(xapp-__APP__.tf)이 생긴 뒤의 ARN.
+  #   scaffold 가 AWS 접근 가능하면 실제 ARN 으로 치환, 아니면 아래 명령으로 채운다:
+  #   aws elbv2 describe-target-groups --names <prefix>-__APP__ --query 'TargetGroups[0].TargetGroupArn' --output text
+  targetGroupARN: __TG_ARN__
+  targetType: ip

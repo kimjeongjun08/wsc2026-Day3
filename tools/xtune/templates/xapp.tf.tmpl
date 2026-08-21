@@ -1,0 +1,51 @@
+# __APP__ — 추가 애플리케이션 인프라 (terraform 이 terraform/ 안의 모든 .tf 를 자동 로드 → 기존 파일 무수정).
+#   생성: xtune scaffold __APP__.  경로 __PATHGLOB__, listener priority __PRIORITY__.
+#   이 파일을 terraform/ 에 복사한 뒤 `terraform apply` → ECR repo + ALB target group + listener rule 생성.
+#   ※ WAF 허용은 이 파일이 아니라 tools/spec.py 에 엔드포인트 추가 후 `python apply_spec.py --apply` 로.
+
+resource "aws_ecr_repository" "__APP__" {
+  name                 = "${local.name}-__APP__"
+  image_tag_mutability = "MUTABLE"
+  force_delete         = true
+}
+
+resource "aws_lb_target_group" "__APP__" {
+  name                          = "${local.name}-__APP__"
+  port                          = __PORT__
+  protocol                      = "HTTP"
+  vpc_id                        = aws_vpc.this.id
+  target_type                   = "ip"
+  deregistration_delay          = 30
+  load_balancing_algorithm_type = "least_outstanding_requests"
+
+  health_check {
+    path                = "__HEALTH__"
+    port                = "__PORT__"
+    healthy_threshold   = 2
+    unhealthy_threshold = 2
+    interval            = 5
+    timeout             = 3
+  }
+
+  tags = { Name = "${local.name}-__APP__" }
+}
+
+resource "aws_lb_listener_rule" "__APP__" {
+  listener_arn = aws_lb_listener.http.arn
+  # ★priority 는 기존과 겹치면 안 됨 (user=10, product=20, stress=30). 필요시 조정.
+  priority = __PRIORITY__
+
+  action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.__APP__.arn
+  }
+
+  condition {
+    path_pattern { values = ["__PATHGLOB__"] }
+  }
+}
+
+# tgb.yaml 이 참조할 target group ARN. `terraform output tg___APP___arn` 로 확인.
+output "tg___APP___arn" {
+  value = aws_lb_target_group.__APP__.arn
+}
