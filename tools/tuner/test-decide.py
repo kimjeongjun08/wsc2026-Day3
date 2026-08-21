@@ -52,9 +52,20 @@ def run(name, led, sn, nodes, memory, want, contains=None, probe=None):
     return d
 
 
-print("== 1. 가용성이 최우선 (되돌릴 수 없다)")
-run("5xx 가 보이면 무조건 증설", ledger(60, 3, {"user": 95}),
-    snap((9000, 60, GOOD), (9000, 0, GOOD), (600, 0, SGOOD)), 3, {}, +1, "가용성")
+print("== 1. 가용성 — 다만 채점 tier 에 비례해서")
+# 가용성 만점 문턱은 90% 다. 오류율 0.67% 는 가용성 99.33% 로 9%p 여유가 있다.
+# 실측(practice 회차): 시작 1분 만에 300건 중 2건 실패로 증설이 걸렸고,
+# 분 평균 2.00대가 목표인 곡선이라 그 한 대가 40점을 날렸다.
+run("장애 수준(>5%)이면 즉시 증설", ledger(60, 3, {"user": 95}),
+    snap((9000, 900, GOOD), (9000, 0, GOOD), (600, 0, SGOOD)), 3, {}, +1, "장애 수준")
+run("★잡음 수준(0.7%)이고 누적 가용성이 멀쩡하면 사지 않는다",
+    ledger(60, 2, {"user": 95}),
+    snap((300, 2, CALM), (300, 0, CALM), (60, 0, SCALM)), 2, {}, 0, None)
+led_bad = ledger(60, 3, {"user": 95})
+for a in score.APPS:                      # 누적 가용성 95% 로 만든다
+    led_bad["ok"][a] = led_bad["req"][a] * 0.95
+run("잡음 수준이라도 누적 가용성이 깎이고 있으면 증설", led_bad,
+    snap((9000, 200, GOOD), (9000, 0, GOOD), (600, 0, SGOOD)), 3, {}, +1, "누적 가용성")
 
 print("== 2. 비용 게이트(30%)는 누적으로 지킨다")
 run("stress 누적 35% → 게이트 방어", ledger(60, 3, {"user": 95, "product": 99, "stress": 35}),

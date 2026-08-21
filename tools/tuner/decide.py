@@ -38,7 +38,17 @@ import json, os, sys, time, argparse
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import score
 
-E5_ALERT   = float(os.environ.get("E5_ALERT", 0.3))    # 5xx 비율 % — 이 위면 가용성 위험
+# ★5xx 문턱은 채점 tier 에 비례해야 한다.
+#   가용성 만점 문턱은 90% 다. 오류율 0.67%(가용성 99.33%)면 9%p 나 여유가 있는데
+#   예전 문턱 0.3% 는 거기서도 노드를 샀다. 노드 1대는 비용 2점이다.
+#   실측(2026-08-21 practice 회차): 시작 1분 만에 300건 중 2건 실패로 증설이 걸렸다.
+#   그 곡선의 목표는 분 평균 2.00대라, 한 대만 사도 40점이 날아간다.
+#   그래서 두 갈래로 나눈다:
+#     E5_SEVERE  진짜 장애다. 지금 당장 늘린다.
+#     E5_WARN    잡음일 수 있다. '누적 가용성'이 실제로 깎이고 있을 때만 늘린다.
+E5_SEVERE = float(os.environ.get("E5_SEVERE", 5.0))     # 이 위면 즉시
+E5_WARN = float(os.environ.get("E5_WARN", 1.0))         # 이 위 + 누적이 나쁘면
+AVAIL_DANGER = float(os.environ.get("AVAIL_DANGER", 97.0))
 GATE_DANGER = float(os.environ.get("GATE_DANGER", 40))  # 누적이 이 밑이면 게이트 위험
 # ★히스테리시스. 목표 tier 는 90% 다.
 #   90 에서 늘리고 90 에서 줄이면 경계에서 노드가 왔다갔다 하고, 그때마다 롤아웃이
@@ -169,11 +179,21 @@ def advise(led, snap, nodes, memory, probe=None):
 
     # ── 1) 가용성 방어 ────────────────────────────────────────────────────
     #   5xx 는 되돌릴 수 없다. 이미 흘린 요청은 회차 끝까지 분모에 남는다.
-    bad5 = [a for a in score.APPS
-            if snap.get(a, {}).get("req", 0) > 30
-            and 100.0 * snap[a].get("e5", 0) / snap[a]["req"] > E5_ALERT]
+    def e5rate(a):
+        d = snap.get(a, {})
+        r = d.get("req", 0)
+        return (100.0 * d.get("e5", 0) / r) if r > 30 else 0.0
+
+    cum_perf, cum_avail, _ = score.ledger_metrics(led)
+    severe = [a for a in score.APPS if e5rate(a) > E5_SEVERE]
+    warn = [a for a in score.APPS
+            if e5rate(a) > E5_WARN
+            and (cum_avail.get(a) if cum_avail.get(a) is not None else 100.0) < AVAIL_DANGER]
+    bad5 = severe or warn
     if bad5:
-        why.append(f"5xx 발생[{','.join(bad5)}] — 가용성 12점 방어, 즉시 증설")
+        why.append("5xx " + ", ".join(f"{a}={e5rate(a):.1f}%" for a in bad5)
+                   + (" — 장애 수준, 즉시 증설" if severe
+                      else f" + 누적 가용성 저하 — 증설"))
         return +1, why
 
     # ── 2) 비용 게이트 방어 ───────────────────────────────────────────────
