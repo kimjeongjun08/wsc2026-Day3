@@ -101,6 +101,22 @@ bx "for h in user-hpa product-hpa; do
 done"
 echo "   HPA 상한 user/product = $HPA_MAX (공유 ${DOMAINS}대 x ${HPA_PER_NODE:-3})"
 
+# ★노드 수를 확실히 만든다 — 자리표시 파드로.
+#   minDomains 를 2 로 고정한 뒤로 상한만 올려서는 노드가 안 생긴다.
+#   Karpenter 는 Pending 파드를 봐야 노드를 만드는데, 부하가 없으면 Pending 이 없다.
+#   실측(2026-08-21): pretune 이 "3대로 만들고 재겠다"며 800초를 기다렸다.
+#   overprovisioning 파드(1900m, priority -10)를 띄우면 노드 하나를 통째로 차지해
+#   Karpenter 가 노드를 만든다. 진짜 파드(priority 500~1000)가 자리를 원하면
+#   즉시 쫓겨나므로(preempt) 용량을 뺏지 않는다 — 예열된 노드가 남는다.
+#   ★앱 Deployment 를 안 건드리므로 롤아웃이 없다 = 가용성을 안 깎는다.
+WANT_WARM=$((DOMAINS - MIN_DOMAINS_FLOOR))
+[ "$WANT_WARM" -lt 0 ] && WANT_WARM=0
+CUR_WARM=$(bx "kubectl -n $NS get deploy overprovisioning -o jsonpath='{.spec.replicas}'" 2>/dev/null | tr -d ' \n')
+if [ "${CUR_WARM:-x}" != "$WANT_WARM" ]; then
+  echo "   자리표시 파드 ${CUR_WARM:-?} → $WANT_WARM (노드를 확실히 만든다, 롤아웃 없음)"
+  bx "kubectl -n $NS scale deploy overprovisioning --replicas=$WANT_WARM >/dev/null 2>&1 || true"
+fi
+
 bx "kubectl patch nodepool apdev-pool --type=merge -p '{\"spec\":{\"limits\":{\"cpu\":\"$LIMIT\"}}}' >/dev/null
 kubectl patch nodepool apdev-stress-pool --type=merge -p '{\"spec\":{\"limits\":{\"cpu\":\"$STRESS_LIMIT\"}}}' >/dev/null
 echo '   apdev-pool='\$(kubectl get nodepool apdev-pool -o jsonpath='{.spec.limits.cpu}')' stress-pool='\$(kubectl get nodepool apdev-stress-pool -o jsonpath='{.spec.limits.cpu}')"
@@ -121,6 +137,7 @@ echo '   apdev-pool='\$(kubectl get nodepool apdev-pool -o jsonpath='{.spec.limi
 #     즉 바닥은 minDomains 가, 천장은 도구가, 그 사이는 실제 수요가 정한다.
 MIN_DOMAINS=${MIN_DOMAINS:-2}
 [ "$DOMAINS" -lt "$MIN_DOMAINS" ] && MIN_DOMAINS=$DOMAINS
+MIN_DOMAINS_FLOOR=$MIN_DOMAINS
 if [ "$CUR_MD" = "$MIN_DOMAINS" ]; then
   echo "-- minDomains $MIN_DOMAINS 유지 — 롤아웃 없음"
 else
@@ -157,12 +174,18 @@ fi
 reclaim apdev-stress-pool "$ISO"
 
 echo "-- 노드 $T 대 이상으로 수렴 대기 (상한 $CAP)"
-for i in $(seq 1 40); do
+for i in $(seq 1 "${CONVERGE_TRIES:-12}"); do
   n=$(bx "kubectl get nodes --no-headers | wc -l" | tr -d ' \n')
   echo "   ${i}: ${n}대 (하한 $T / 상한 $CAP)"
   [ "${n:-0}" -ge "$T" ] && [ "${n:-0}" -le "$CAP" ] && break
   sleep 20
 done
+# ★영원히 기다리지 않는다. 못 만들었으면 그 사실을 말하고 넘어간다.
+#   예전엔 40회 × 20초 = 800초를 조용히 기다렸다. 부르는 쪽(운영 루프·pretune)이
+#   그동안 아무 판단도 못 한다. 노드는 뒤늦게라도 뜨므로 다음 주기가 알아서 본다.
+if [ "${n:-0}" -lt "$T" ]; then
+  echo "   !! ${CONVERGE_TRIES:-12}회 확인 동안 $T 대에 못 미쳤다(현재 ${n}대) — 넘어간다"
+fi
 # ★상태 파일은 여기서 쓴다.
 #   예전엔 호출자(autotune/GO)가 각자 썼다. 그래서 apply.sh 를 직접 부르면
 #   클러스터는 바뀌는데 STATE 는 옛 값이 남았고, 다음 판단이 그 옛 값을 믿었다.
