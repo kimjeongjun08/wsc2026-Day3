@@ -283,7 +283,14 @@ case "${1:-run}" in
   show)    once no ;;
   ready)   ready ;;
   run)
-    echo "운영 루프 시작 (${INTERVAL}초 주기, ${MIN_GAIN}점 이상 개선될 때만 변경)"
+    # ★죽으면 왜 죽었는지 남긴다.
+    #   실측: 긴 회차에서 이 루프가 76분 만에 조용히 끝났다. 로그 마지막 줄은
+    #   정상적인 트래픽 라인이었고 에러가 없었다. 원인을 못 찾은 채 감독 루프로
+    #   덮어놨었는데, 덮기만 하면 다음에도 똑같이 모른다. 신호와 종료를 기록한다.
+    trap 'echo "[$(date +%H:%M:%S)] 종료 신호 받음: $s" >&2' HUP INT TERM
+    for s in HUP INT TERM; do trap "echo \"[\$(date +%H:%M:%S)] 신호 $s 받고 종료한다\" >&2; exit 129" $s; done
+    trap 'rc=$?; echo "[$(date +%H:%M:%S)] 루프 종료 rc=$rc (line $LINENO)" >&2' EXIT
+    echo "운영 루프 시작 (${INTERVAL}초 주기) pid=$$"
     while :; do
       once yes; rc=$?
       # ★과부하 대응 직후(rc=2)에는 안정화를 기다리지 않는다.

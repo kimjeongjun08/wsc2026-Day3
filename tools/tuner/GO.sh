@@ -135,9 +135,33 @@ setup)
   ;;
 
 watch)
-  echo "감시·조정 루프를 백그라운드로 켠다. 로그: autotune.log"
-  nohup ./autotune.sh run > autotune.log 2>&1 &
-  echo "PID $! — 끄려면: pkill -f 'autotune[.]sh run'"
+  # ★감독 루프를 도구 안에 둔다.
+  #   실측에서 운영 루프가 76분 만에 조용히 죽은 적이 있다. 원인은 아직 모른다.
+  #   대회 중에 그러면 그 뒤 구간은 통째로 방치된다. 죽으면 다시 띄운다.
+  #   setsid 로 세션에서 떼어낸다 — nohup 만으로는 SSH 가 끊길 때 같이 죽는다.
+  echo "감시·조정 루프를 켠다 (죽으면 자동 재기동). 로그: autotune.log"
+  cat > .supervise.sh <<'SUP'
+#!/usr/bin/env bash
+cd "$(dirname "$0")" || exit 1
+n=0
+while :; do
+  n=$((n+1))
+  echo "=== [$(date +%H:%M:%S)] 운영 루프 기동 #$n" >> autotune.log
+  ./autotune.sh run >> autotune.log 2>&1
+  rc=$?   # ★먼저 잡아둔다. 아래 문자열의 $(date) 가 $? 를 덮어쓴다.
+  echo "=== [$(date +%H:%M:%S)] 운영 루프 종료 rc=$rc — 5초 뒤 재기동" >> autotune.log
+  sleep 5
+done
+SUP
+  chmod +x .supervise.sh
+  # setsid 가 있으면 세션에서 완전히 떼어낸다(SSH 가 끊겨도 안 죽는다).
+  # macOS 에는 없으므로 nohup 으로 떨어진다 — 대회 PC(WSL)에는 있다.
+  if command -v setsid >/dev/null 2>&1; then
+    setsid ./.supervise.sh > /dev/null 2>&1 < /dev/null &
+  else
+    nohup ./.supervise.sh > /dev/null 2>&1 < /dev/null &
+  fi
+  echo "PID $! — 끄려면: pkill -f '[.]supervise[.]sh'; pkill -f 'autotune[.]sh run'"
   echo "회차 길이는 안 물어본다 — 15분이든 2시간이든 같은 판단으로 돈다."
   sleep 3
   tail -5 autotune.log
