@@ -89,7 +89,7 @@ done
 # === Install AWS Load Balancer Controller ===
 # ★Karpenter CFN을 백그라운드로 먼저 시작 (가장 오래 걸림, LBC와 병렬)
 export KARPENTER_VERSION="1.8.6"
-TEMPOUT="/home/ec2-user/karpenter-cfn.yaml"
+TEMPOUT="/tmp/karpenter-cfn.yaml"
 curl -fsSL "https://raw.githubusercontent.com/aws/karpenter-provider-aws/v$KARPENTER_VERSION/website/content/en/preview/getting-started/getting-started-with-karpenter/cloudformation.yaml" > "$TEMPOUT"
 aws cloudformation deploy \
   --stack-name "Karpenter-$CLUSTER_NAME" \
