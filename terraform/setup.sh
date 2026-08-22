@@ -48,23 +48,26 @@ else
 fi
 echo "=== MySQL tables created ==="
 
-# ECR: login & build/push images
+# ECR: login & build/push images (3앱 병렬)
 aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin $ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com
 
 for APP in user product stress; do
-  mkdir -p /home/ec2-user/build-$APP
-  cp /home/ec2-user/application/$APP/$APP /home/ec2-user/build-$APP/app
+  (
+    mkdir -p /home/ec2-user/build-$APP
+    cp /home/ec2-user/application/$APP/$APP /home/ec2-user/build-$APP/app
 
-  cat > /home/ec2-user/build-$APP/Dockerfile <<'EOF'
+    cat > /home/ec2-user/build-$APP/Dockerfile <<'EOF'
 FROM golang:alpine
 COPY app app
 RUN chmod +x app && apk add --no-cache curl libc6-compat
 CMD ["./app"]
 EOF
 
-  docker build -t $ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com/$ECR_PREFIX-$APP:latest /home/ec2-user/build-$APP/
-  docker push $ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com/$ECR_PREFIX-$APP:latest
+    docker build -t $ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com/$ECR_PREFIX-$APP:latest /home/ec2-user/build-$APP/
+    docker push $ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com/$ECR_PREFIX-$APP:latest
+  ) &
 done
+wait
 echo "=== ECR images pushed ==="
 
 # Wait for EKS nodes to be ready
@@ -82,6 +85,18 @@ for IID in $MNG_INSTANCES; do
 done
 
 # === Install AWS Load Balancer Controller ===
+# ★Karpenter CFN을 백그라운드로 먼저 시작 (가장 오래 걸림, LBC와 병렬)
+export KARPENTER_VERSION="1.8.6"
+TEMPOUT="/home/ec2-user/karpenter-cfn.yaml"
+curl -fsSL "https://raw.githubusercontent.com/aws/karpenter-provider-aws/v$KARPENTER_VERSION/website/content/en/preview/getting-started/getting-started-with-karpenter/cloudformation.yaml" > "$TEMPOUT"
+aws cloudformation deploy \
+  --stack-name "Karpenter-$CLUSTER_NAME" \
+  --template-file "$TEMPOUT" \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --parameter-overrides "ClusterName=$CLUSTER_NAME" \
+  --region $REGION &
+KP_CFN_PID=$!
+
 eksctl utils associate-iam-oidc-provider --cluster $CLUSTER_NAME --region $REGION --approve
 
 # ★멱등성 가드: 이전 클러스터 잔재(같은 이름의 IRSA 역할)로 SA 누락/신뢰정책 stale 방지.
@@ -178,17 +193,10 @@ kubectl rollout status deploy/aws-load-balancer-controller -n kube-system --time
 echo "=== LBC installed ==="
 
 # === Install Karpenter ===
-export KARPENTER_VERSION="1.8.6"
-
-TEMPOUT="/home/ec2-user/karpenter-cfn.yaml"
-curl -fsSL "https://raw.githubusercontent.com/aws/karpenter-provider-aws/v$KARPENTER_VERSION/website/content/en/preview/getting-started/getting-started-with-karpenter/cloudformation.yaml" > "$TEMPOUT"
-
-aws cloudformation deploy \
-  --stack-name "Karpenter-$CLUSTER_NAME" \
-  --template-file "$TEMPOUT" \
-  --capabilities CAPABILITY_NAMED_IAM \
-  --parameter-overrides "ClusterName=$CLUSTER_NAME" \
-  --region $REGION
+# CFN은 위에서 백그라운드로 시작했다 — 여기서 완료 대기
+echo "Waiting for Karpenter CFN stack..."
+wait $KP_CFN_PID 2>/dev/null || true
+echo "=== Karpenter CFN done ==="
 
 # Karpenter 노드가 EKS 클러스터에 조인할 수 있도록 access entry 추가
 aws eks create-access-entry --cluster-name $CLUSTER_NAME \
