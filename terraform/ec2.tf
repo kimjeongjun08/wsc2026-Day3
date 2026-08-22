@@ -28,6 +28,14 @@ resource "aws_security_group" "ec2" {
   name   = "${local.name}-ec2-sg"
   vpc_id = aws_vpc.this.id
 
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "SSH"
+  }
+
   egress {
     from_port   = 0
     to_port     = 0
@@ -164,5 +172,5 @@ resource "aws_instance" "bastion" {
 
   tags = { Name = "${local.name}-bastion" }
 
-  depends_on = [aws_ecr_repository.this, aws_eks_node_group.this, aws_s3_object.k8s_tgb, aws_s3_object.k8s_static, aws_s3_object.app_binaries, aws_s3_object.dump_sql]
+  depends_on = [aws_db_proxy_target.this, aws_ecr_repository.this, aws_eks_node_group.this, aws_s3_object.k8s_configmap, aws_s3_object.k8s_tgb, aws_s3_object.k8s_static, aws_s3_object.app_binaries, aws_s3_object.dump_sql]
 }

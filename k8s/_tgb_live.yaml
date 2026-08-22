@@ -1,0 +1,35 @@
+apiVersion: elbv2.k8s.aws/v1beta1
+kind: TargetGroupBinding
+metadata:
+  name: user-tgb
+  namespace: apdev
+spec:
+  serviceRef:
+    name: user-svc
+    port: 8080
+  targetGroupARN: arn:aws:elasticloadbalancing:ap-northeast-2:950274644703:targetgroup/apdev-user/952d70ab5171e89e
+  targetType: ip
+---
+apiVersion: elbv2.k8s.aws/v1beta1
+kind: TargetGroupBinding
+metadata:
+  name: product-tgb
+  namespace: apdev
+spec:
+  serviceRef:
+    name: product-svc
+    port: 8080
+  targetGroupARN: arn:aws:elasticloadbalancing:ap-northeast-2:950274644703:targetgroup/apdev-product/3cc403076c8e4971
+  targetType: ip
+---
+apiVersion: elbv2.k8s.aws/v1beta1
+kind: TargetGroupBinding
+metadata:
+  name: stress-tgb
+  namespace: apdev
+spec:
+  serviceRef:
+    name: stress-svc
+    port: 8080
+  targetGroupARN: arn:aws:elasticloadbalancing:ap-northeast-2:950274644703:targetgroup/apdev-stress/8947012f159acda0
+  targetType: ip

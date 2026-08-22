@@ -1,7 +1,12 @@
 #!/bin/bash
 set -ex
 
+# SSH 비밀번호 인증 활성화 (AL2023 호환)
 sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config
+sed -i 's/^#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+# AL2023은 sshd_config.d 에서 오버라이드할 수 있으므로 거기도 설정
+mkdir -p /etc/ssh/sshd_config.d
+echo 'PasswordAuthentication yes' > /etc/ssh/sshd_config.d/99-password.conf
 systemctl restart sshd
 echo 'Skill53##' | passwd --stdin ec2-user
 
