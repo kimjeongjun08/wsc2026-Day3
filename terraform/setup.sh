@@ -15,9 +15,10 @@ export VPC_ID="${vpc_id}"
 export SETUP_BUCKET="${setup_bucket}"
 export ECR_PREFIX="${ecr_prefix}"
 
-# === MySQL + ECR in parallel while waiting for EKS nodes ===
-
-# MySQL: create tables + load dump
+# === MySQL dump를 백그라운드로 (RDS 준비되면 바로 로드) ===
+# ★dump는 중요하지만 다른 작업(ECR, LBC, Karpenter)을 막으면 안 된다.
+#   RDS가 아직 안 됐으면 until 루프에서 대기하다가 준비되면 즉시 로드.
+(
 until mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASS" -e "SELECT 1" 2>/dev/null; do sleep 3; done
 mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASS" "$DB_NAME" <<'SQL'
 CREATE TABLE IF NOT EXISTS user (
@@ -37,7 +38,6 @@ CREATE TABLE IF NOT EXISTS product (
 );
 SQL
 
-# dump 로드 (이미 데이터 있으면 스킵)
 aws s3 cp s3://$SETUP_BUCKET/load_user.dump /home/ec2-user/load_user.dump --region $REGION
 ROW_COUNT=$(mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASS" "$DB_NAME" -sN -e "SELECT COUNT(*) FROM user" 2>/dev/null || echo "0")
 if [ -s /home/ec2-user/load_user.dump ] && [ "$ROW_COUNT" = "0" ]; then
@@ -47,6 +47,8 @@ else
   echo "=== Dump skipped (already loaded: $ROW_COUNT rows) ==="
 fi
 echo "=== MySQL tables created ==="
+) &
+MYSQL_PID=$!
 
 # ECR: login & build/push images
 aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin $ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com
@@ -254,7 +256,36 @@ echo "=== Karpenter NodePool applied ==="
 # === Deploy applications ===
 kubectl create namespace apdev --dry-run=client -o yaml | kubectl apply -f -
 kubectl apply -f /home/ec2-user/k8s/priorityclass.yaml
-kubectl apply -f /home/ec2-user/k8s/configmap.yaml
+
+# ★configmap을 직접 생성 (Proxy 주소를 런타임에 조회).
+#   terraform에서 S3에 올리면 Proxy 생성을 기다려야 해서 bastion 시작이 늦어진다.
+#   여기서 직접 만들면 "Proxy가 준비될 때까지 대기 → 준비되면 즉시 configmap 생성".
+echo "Waiting for RDS Proxy..."
+PROXY_HOST=""
+until [ -n "$PROXY_HOST" ]; do
+  PROXY_HOST=$(aws rds describe-db-proxies --region $REGION \
+    --query "DBProxies[?DBProxyName=='${ECR_PREFIX}-proxy'].Endpoint" --output text 2>/dev/null)
+  [ "$PROXY_HOST" = "None" ] && PROXY_HOST=""
+  [ -z "$PROXY_HOST" ] && sleep 5
+done
+echo "RDS Proxy ready: $PROXY_HOST"
+
+cat <<CFGEOF | kubectl apply -f -
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: apdev
+data:
+  AWS_REGION: "$REGION"
+  MYSQL_DBNAME: "$DB_NAME"
+  MYSQL_HOST: "$PROXY_HOST"
+  MYSQL_PASSWORD: "$DB_PASS"
+  MYSQL_PORT: "$DB_PORT"
+  MYSQL_USER: "$DB_USER"
+  S3_BUCKET: "$S3_BUCKET"
+CFGEOF
+echo "=== ConfigMap created (proxy: $PROXY_HOST) ==="
 # ★deploy.yaml의 이미지 플레이스홀더(ACCOUNT_ID/REGION/PROJECT)는 terraform이 S3에
 #   업로드할 때 이미 실제 값으로 치환한다(ec2.tf의 aws_s3_object.k8s_deploy).
 #   그래서 여기서 별도 치환을 하지 않는다 — 이중 치환은 매칭 실패만 만든다.
@@ -303,6 +334,11 @@ for i in $(seq 1 12); do
   echo "tgb.yaml apply 재시도 ($i/12) — LBC IRSA(신뢰정책) 전파 대기"; sleep 10
 done
 echo "=== TGB applied - pods registered to ALB ==="
+
+# MySQL dump가 끝날 때까지 대기 (아직 안 끝났으면)
+echo "Waiting for MySQL dump to complete..."
+wait $MYSQL_PID 2>/dev/null || true
+echo "=== MySQL dump confirmed ==="
 
 echo "=== SETUP COMPLETE ==="
 
