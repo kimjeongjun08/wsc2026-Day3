@@ -15,9 +15,10 @@ export VPC_ID="${vpc_id}"
 export SETUP_BUCKET="${setup_bucket}"
 export ECR_PREFIX="${ecr_prefix}"
 
-# === MySQL + ECR in parallel while waiting for EKS nodes ===
+# === MySQL + ECR 병렬 ===
 
-# MySQL: create tables + load dump
+# MySQL: create tables + load dump (백그라운드 — RDS 대기 후 즉시 로드)
+(
 until mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASS" -e "SELECT 1" 2>/dev/null; do sleep 3; done
 mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASS" "$DB_NAME" <<'SQL'
 CREATE TABLE IF NOT EXISTS user (
@@ -37,7 +38,6 @@ CREATE TABLE IF NOT EXISTS product (
 );
 SQL
 
-# dump 로드 (이미 데이터 있으면 스킵)
 aws s3 cp s3://$SETUP_BUCKET/load_user.dump /home/ec2-user/load_user.dump --region $REGION
 ROW_COUNT=$(mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASS" "$DB_NAME" -sN -e "SELECT COUNT(*) FROM user" 2>/dev/null || echo "0")
 if [ -s /home/ec2-user/load_user.dump ] && [ "$ROW_COUNT" = "0" ]; then
@@ -46,7 +46,9 @@ if [ -s /home/ec2-user/load_user.dump ] && [ "$ROW_COUNT" = "0" ]; then
 else
   echo "=== Dump skipped (already loaded: $ROW_COUNT rows) ==="
 fi
-echo "=== MySQL tables created ==="
+echo "=== MySQL done ==="
+) &
+MYSQL_PID=$!
 
 # ECR: login & build/push images (3앱 병렬)
 aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin $ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com
@@ -271,6 +273,10 @@ kubectl apply -f /home/ec2-user/k8s/karpenter.yaml
 echo "=== Karpenter NodePool applied ==="
 
 # === Deploy applications ===
+# MySQL dump 완료 대기 (앱이 DB를 쓰므로)
+echo "Waiting for MySQL dump..."
+wait $MYSQL_PID 2>/dev/null || true
+echo "=== MySQL confirmed ==="
 kubectl create namespace apdev --dry-run=client -o yaml | kubectl apply -f -
 kubectl apply -f /home/ec2-user/k8s/priorityclass.yaml
 kubectl apply -f /home/ec2-user/k8s/configmap.yaml
