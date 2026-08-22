@@ -152,45 +152,11 @@ eksctl create iamserviceaccount \
   --name=aws-load-balancer-controller \
   --role-name AmazonEKSLoadBalancerControllerRole \
   --attach-policy-arn=arn:aws:iam::$ACCOUNT_ID:policy/AWSLoadBalancerControllerIAMPolicy \
-  --approve --override-existing-serviceaccounts
+  --approve --override-existing-serviceaccounts &
+LBC_IRSA_PID=$!
 
 # ★역할에 정책이 실제로 붙었는지 확인한다. eksctl 이 조용히 넘어가는 경우가 있다.
-if ! aws iam list-attached-role-policies --role-name AmazonEKSLoadBalancerControllerRole \
-     --query 'AttachedPolicies[].PolicyArn' --output text 2>/dev/null | grep -q AWSLoadBalancerControllerIAMPolicy; then
-  echo "  LBC 역할에 정책이 없다 — 직접 붙인다"
-  aws iam attach-role-policy --role-name AmazonEKSLoadBalancerControllerRole \
-    --policy-arn "$LBC_POLICY_ARN" || echo "  !! 정책 부착 실패" >&2
-fi
-
-# SA가 안 만들어졌을 경우 대비
-kubectl get sa aws-load-balancer-controller -n kube-system 2>/dev/null || \
-  kubectl create sa aws-load-balancer-controller -n kube-system
-kubectl annotate sa aws-load-balancer-controller -n kube-system \
-  eks.amazonaws.com/role-arn=arn:aws:iam::$ACCOUNT_ID:role/AmazonEKSLoadBalancerControllerRole \
-  --overwrite
-ensure_irsa AmazonEKSLoadBalancerControllerRole kube-system aws-load-balancer-controller  # ★신뢰정책 현재 OIDC로 강제(고정이름 역할=잔존 위험)
-
-helm repo add eks https://aws.github.io/eks-charts
-helm repo update eks
-# ★LB 컨트롤러에도 CPU 요청을 준다(상한은 안 건다).
-#   이 컨트롤러가 멈추면 파드가 노드를 옮겨도 ALB 타깃이 갱신되지 않는다.
-#   실측(2026-08-21): 요청이 없어 과부하에서 굶었고, 별개로 IAM 정책 누락까지
-#   겹치면서 파드는 전부 Running·healthcheck 200 인데 ALB 는 502 를 반환했다.
-#   가용성 12점이 통째로 걸린 컴포넌트다. 앱과 CPU 를 두고 경쟁하게 두면 안 된다.
-helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
-  -n kube-system \
-  --set clusterName=$CLUSTER_NAME \
-  --set serviceAccount.create=false \
-  --set serviceAccount.name=aws-load-balancer-controller \
-  --set region=$REGION \
-  --set vpcId=$VPC_ID \
-  --set replicaCount=2 \
-  --set resources.requests.cpu=150m \
-  --set resources.requests.memory=256Mi \
-  --set resources.limits.memory=512Mi
-
-kubectl rollout status deploy/aws-load-balancer-controller -n kube-system --timeout=120s
-echo "=== LBC installed ==="
+# (LBC IRSA 완료 후 확인 — 아래에서 wait 후 실행)
 
 # === Install Karpenter ===
 # CFN은 위에서 백그라운드로 시작했다 — 여기서 완료 대기
@@ -215,16 +181,55 @@ eksctl create iamserviceaccount \
   --attach-policy-arn "arn:aws:iam::$ACCOUNT_ID:policy/KarpenterControllerPolicy-$CLUSTER_NAME" \
   --approve --override-existing-serviceaccounts
 
-# ★역할에 정책이 실제로 붙었는지 확인한다. eksctl 이 조용히 넘어가는 경우가 있다.
+# LBC IRSA 완료 대기
+wait $LBC_IRSA_PID 2>/dev/null || true
+
+# ★LBC 역할에 정책 붙었는지 확인
 if ! aws iam list-attached-role-policies --role-name AmazonEKSLoadBalancerControllerRole \
      --query 'AttachedPolicies[].PolicyArn' --output text 2>/dev/null | grep -q AWSLoadBalancerControllerIAMPolicy; then
   echo "  LBC 역할에 정책이 없다 — 직접 붙인다"
   aws iam attach-role-policy --role-name AmazonEKSLoadBalancerControllerRole \
     --policy-arn "$LBC_POLICY_ARN" || echo "  !! 정책 부착 실패" >&2
 fi
-ensure_irsa KarpenterControllerRole-$CLUSTER_NAME kube-system karpenter  # ★SA 보장(eksctl 스킵 대비) + 신뢰정책 현재 OIDC로 강제 → rollout 타임아웃 방지
 
+# ★Karpenter 역할 확인
+if ! aws iam list-attached-role-policies --role-name "KarpenterControllerRole-$CLUSTER_NAME" \
+     --query 'AttachedPolicies[].PolicyArn' --output text 2>/dev/null | grep -q KarpenterControllerPolicy; then
+  echo "  Karpenter 역할에 정책이 없다 — 직접 붙인다"
+  aws iam attach-role-policy --role-name "KarpenterControllerRole-$CLUSTER_NAME" \
+    --policy-arn "arn:aws:iam::$ACCOUNT_ID:policy/KarpenterControllerPolicy-$CLUSTER_NAME" || true
+fi
+
+# SA 보장 + 신뢰정책 강제
+kubectl get sa aws-load-balancer-controller -n kube-system 2>/dev/null || \
+  kubectl create sa aws-load-balancer-controller -n kube-system
+kubectl annotate sa aws-load-balancer-controller -n kube-system \
+  eks.amazonaws.com/role-arn=arn:aws:iam::$ACCOUNT_ID:role/AmazonEKSLoadBalancerControllerRole \
+  --overwrite
+ensure_irsa AmazonEKSLoadBalancerControllerRole kube-system aws-load-balancer-controller
+ensure_irsa KarpenterControllerRole-$CLUSTER_NAME kube-system karpenter
+
+# === Helm 설치 (LBC + Karpenter 병렬) ===
+helm repo add eks https://aws.github.io/eks-charts
+helm repo update eks
 helm registry logout public.ecr.aws || true
+
+(
+helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
+  -n kube-system \
+  --set clusterName=$CLUSTER_NAME \
+  --set serviceAccount.create=false \
+  --set serviceAccount.name=aws-load-balancer-controller \
+  --set region=$REGION \
+  --set vpcId=$VPC_ID \
+  --set replicaCount=2 \
+  --set resources.requests.cpu=150m \
+  --set resources.requests.memory=256Mi \
+  --set resources.limits.memory=512Mi
+) &
+LBC_HELM_PID=$!
+
+(
 helm upgrade --install karpenter oci://public.ecr.aws/karpenter/karpenter \
   --version "$KARPENTER_VERSION" \
   --namespace kube-system --create-namespace \
@@ -233,9 +238,15 @@ helm upgrade --install karpenter oci://public.ecr.aws/karpenter/karpenter \
   --set "settings.clusterName=$CLUSTER_NAME" \
   --set "settings.interruptionQueue=$CLUSTER_NAME" \
   --set replicas=1
+) &
+KP_HELM_PID=$!
 
+wait $LBC_HELM_PID 2>/dev/null || true
+wait $KP_HELM_PID 2>/dev/null || true
+
+kubectl rollout status deploy/aws-load-balancer-controller -n kube-system --timeout=120s
 kubectl rollout status deploy/karpenter -n kube-system --timeout=300s
-echo "=== Karpenter installed ==="
+echo "=== LBC + Karpenter installed ==="
 
 # === VPC CNI Prefix Delegation ===
 #   ★파드 수 상한을 푸는 설정. 이게 없으면 노드당 파드 수가 ENI 개수로 제한된다
