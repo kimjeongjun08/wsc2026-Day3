@@ -72,10 +72,18 @@ WANT_SEL=""; [ "$ISO" != 0 ] && WANT_SEL=stress
 if [ "$CUR_SEL" = "$WANT_SEL" ] && [ "$ISO" -le 1 ]; then
   echo "-- stress 배치 변경 없음 — 롤아웃 생략"
 elif [ "$ISO" = "0" ]; then
-  bx "kubectl -n $NS patch deploy stress --type=json -p='[
-        {\"op\":\"remove\",\"path\":\"/spec/template/spec/nodeSelector\"},
-        {\"op\":\"remove\",\"path\":\"/spec/template/spec/tolerations\"},
-        {\"op\":\"remove\",\"path\":\"/spec/template/spec/topologySpreadConstraints\"}]' >/dev/null 2>&1 || true"
+  # ★remove 는 반드시 하나씩 따로 보낸다.
+  #   JSON Patch 의 remove 는 경로가 없으면 그 패치 전체가 실패한다.
+  #   셋을 한 번에 묶었더니 topologySpreadConstraints 가 이미 없는 상태에서
+  #   패치가 통째로 거부됐고, nodeSelector(role=stress) 가 파드에 남았다.
+  #   전용 노드는 0대인데 파드는 전용 노드만 찾으니 영원히 Pending 이 되고,
+  #   stress-svc 엔드포인트가 비어 트래픽이 전멸한다.
+  #   실측(2026-08-24 MAX_NODES=12 시험): stress avail 0.00%, 파드 68분째 Pending.
+  for _f in nodeSelector tolerations topologySpreadConstraints; do
+    bx "kubectl -n $NS patch deploy stress --type=json \
+         -p='[{\"op\":\"remove\",\"path\":\"/spec/template/spec/$_f\"}]' \
+         >/dev/null 2>&1 || true"
+  done
   # ★전용을 없앨 때 stress-hpa 의 minReplicas 도 같이 되돌린다.
   #   이걸 안 하면 이전 회차에서 iso4 로 올려둔 minReplicas=4 가 그대로 남는다.
   #   바닥(2대/shared)에서는 stress 파드 4개를 얹을 자리가 없어 하나가 영영
