@@ -22,3 +22,10 @@ tools/tuner/*.bak
 tools/tuner/*.len*.json
 tools/tuner/autotune.log
 tools/tuner/pretable.tsv
+tools/tuner/.round-ledger.json
+tools/tuner/.stress-req-bumped
+tools/tuner/.probe-paths
+tools/tuner/.probe-seed
+tools/tuner/.supervise.sh
+tools/tuner/autotune*.log
+tools/nodewatch.csv
