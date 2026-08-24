@@ -130,12 +130,30 @@ fi
 #   전체의 18% 다. 노드를 더 사지 않고 대기만 줄이는 방법이다.
 #   DB 커넥션이 한도(db.t3.micro 약 85)에 걸리므로 max_connections 를 150 으로
 #   함께 올렸다(동적 파라미터, 재시작 없음).
-HPA_MAX=$(( (CAP-ISO) * ${HPA_PER_NODE:-5} + 2 ))
+# ★HPA 상한을 노드 수에서 분리한다.
+#   실측(2026-08-24 MAX_NODES=12 시험)으로 병목이 파드당 처리 한계임을 확인했다:
+#     user 총 CPU 는 12파드일 때나 32파드일 때나 1,800m 로 동일한데
+#     p50 은 580ms → 142ms 로 갈렸다. 130rps ÷ 파드수가 지연을 정한다.
+#   HPA 는 1분 만에 파드를 12개(당시 상한)까지 늘렸지만 상한이 노드에 묶여
+#   노드가 느린 만큼(6분) 파드도 못 늘었다 — 회복 지연의 정체가 이것이다.
+#   requests 70m 기준 노드당 27개까지 스케줄되므로 노드당 5개는 과잉보호였다.
+#   상한을 열면 Pending 파드가 곧 Karpenter 방아쇠라 노드 증설도 빨라진다.
+#   DB 커넥션: 파드당 약 1.7개 × (user 35 + product 35) ≈ 119 < max_connections 150.
+HPA_MAX=${HPA_MAX_FIXED:-35}
 [ "$HPA_MAX" -lt 2 ] && HPA_MAX=2
 bx "for h in user-hpa product-hpa; do
   kubectl -n $NS patch hpa \$h -p '{\"spec\":{\"maxReplicas\":$HPA_MAX}}' >/dev/null 2>&1
 done"
-echo "   HPA 상한 user/product = $HPA_MAX (공유 ${DOMAINS}대 x ${HPA_PER_NODE:-5})"
+echo "   HPA 상한 user/product = $HPA_MAX (노드 수와 무관, 고정)"
+# ★stress 파드 상한은 6 을 유지한다 — 10 으로 열어봤다가 되돌렸다.
+#   가설은 "user 처럼 파드당 큐가 병목"이었는데 실측이 반대로 나왔다:
+#   실측(2026-08-24, 같은 peak2 16분 곡선 비교)
+#     상한 6:  stress avail 78.32%  perf 62.14%  avg_ec2 6.25
+#     상한 10: stress avail 62.36%  perf 37.23%  avg_ec2 6.69   ← 전부 악화
+#   파드가 전용 노드 수보다 많아지면 배치가 흔들리고 재스케줄이 잦아진다.
+#   stress 는 요청당 CPU 가 무거워(0.83 core·s) 파드 분할의 이득이 없다.
+bx "kubectl -n $NS patch hpa stress-hpa -p '{\"spec\":{\"maxReplicas\":${STRESS_HPA_MAX:-6}}}' >/dev/null 2>&1 || true"
+echo "   HPA 상한 stress = ${STRESS_HPA_MAX:-6}"
 
 # ★노드 수를 확실히 만든다 — 자리표시 파드로.
 #   minDomains 를 2 로 고정한 뒤로 상한만 올려서는 노드가 안 생긴다.
