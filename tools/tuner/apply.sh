@@ -74,7 +74,15 @@ if [ "$CUR_SEL" = "$WANT_SEL" ] && [ "$ISO" -le 1 ]; then
 elif [ "$ISO" = "0" ]; then
   bx "kubectl -n $NS patch deploy stress --type=json -p='[
         {\"op\":\"remove\",\"path\":\"/spec/template/spec/nodeSelector\"},
-        {\"op\":\"remove\",\"path\":\"/spec/template/spec/tolerations\"}]' >/dev/null 2>&1 || true"
+        {\"op\":\"remove\",\"path\":\"/spec/template/spec/tolerations\"},
+        {\"op\":\"remove\",\"path\":\"/spec/template/spec/topologySpreadConstraints\"}]' >/dev/null 2>&1 || true"
+  # ★전용을 없앨 때 stress-hpa 의 minReplicas 도 같이 되돌린다.
+  #   이걸 안 하면 이전 회차에서 iso4 로 올려둔 minReplicas=4 가 그대로 남는다.
+  #   바닥(2대/shared)에서는 stress 파드 4개를 얹을 자리가 없어 하나가 영영
+  #   Pending 이 되고, 롤아웃이 끝나지 않아 '안정화'가 영원히 안 된다.
+  #   실측(2026-08-24): 그 파드가 35분째 Pending 이었고 setup 이 30회를 다
+  #   기다렸다. 노드도 3대에서 안 줄었다 — Pending 이 있으면 회수가 막힌다.
+  bx "kubectl -n $NS patch hpa stress-hpa -p '{\"spec\":{\"minReplicas\":1}}' >/dev/null 2>&1 || true"
 else
   # stress 전용 노드가 2대 이상 필요하면 stress 파드에도 분산 제약을 걸어야 한다.
   #   user/product 와 같은 이유다 — 도메인이 1개뿐이면 skew 가 항상 0 이라
