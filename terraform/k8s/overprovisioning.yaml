@@ -31,8 +31,10 @@ spec:
           image: registry.k8s.io/pause:3.9
           resources:
             requests:
-              cpu: 1900m   # 노드(t3.medium 1930m alloc) 거의 전부 차지 → 1파드=1노드 확보
+              cpu: 1500m   # t3.medium alloc 1930m 에서 DaemonSet(약 150m) 을 뺀 여유 안. 1900m 로 두면
+              #   Karpenter 시뮬레이션이 1900+150=2050m 가 되어 어떤 노드에도 안 들어가고
+              #   증설이 영원히 실패한다(실측 2026-08-24).
               memory: 128Mi
             limits:
-              cpu: 1900m
+              cpu: 1500m
               memory: 128Mi

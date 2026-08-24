@@ -202,6 +202,17 @@ watch)
     echo "stress cpu.requests ${CUR_REQ} — 그대로 둔다"
   fi
 
+  # ★바닥을 먼저 고정한다.
+  #   상태 파일이 없으면 튜너는 노드 수를 소유하지 못한다. 그 사이 Karpenter 가
+  #   NodePool 상한까지 제 판단으로 노드를 붙인다.
+  #   실측(2026-08-24): 상태 파일 없이 watch 만 켰더니 baseline 이 3대로 시작했고
+  #   비용이 12/12 대신 10/12 였다. doctor 가 경고해도 사람이 넘기면 그만이라
+  #   도구가 스스로 처리한다.
+  if [ ! -s "${STATE:-.tuner-state}" ]; then
+    echo "상태 파일이 없다 — 바닥을 ${COLD_NODES:-2}대로 먼저 고정한다"
+    ./apply.sh "${COLD_NODES:-2}" "${COLD_MODE:-shared}" "${COLD_NODES:-2}" 2>&1 | tail -2
+  fi
+
   echo "감시·조정 루프를 켠다 (죽으면 자동 재기동). 로그: autotune.log"
   cat > .supervise.sh <<'SUP'
 #!/usr/bin/env bash

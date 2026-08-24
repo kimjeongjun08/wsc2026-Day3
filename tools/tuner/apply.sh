@@ -175,7 +175,13 @@ reclaim() {   # $1=풀이름 $2=목표 노드수
   if [ "${cur:-0}" -gt "$2" ]; then
     drop=$((cur-$2))
     echo "-- $1: $cur → $2 대, NodeClaim $drop 개 회수"
-    bx "kubectl get nodeclaim -l karpenter.sh/nodepool=$1 --no-headers | awk '{print \$1}' | head -$drop | xargs -r kubectl delete nodeclaim"
+    # ★--wait=false 로 부른다. 기다리면 루프가 통째로 멈춘다.
+    #   NodeClaim 삭제는 drain + 파이널라이저를 기다리므로, 파드가 안 빠지면
+    #   kubectl 이 영원히 안 끝난다. 바깥 timeout 은 손자 프로세스(kubectl)를
+    #   못 죽여서 소용이 없었다.
+    #   실측(2026-08-24 A회차): 이 한 줄에 걸려 peak2 10분 동안 판단이 0건이었다.
+    #   회수는 요청만 넣고 빠진다 — 실제 제거는 Karpenter 가 뒤에서 마무리한다.
+    bx "kubectl get nodeclaim -l karpenter.sh/nodepool=$1 --no-headers | awk '{print \$1}' | head -$drop | xargs -r timeout 20 kubectl delete nodeclaim --wait=false"
   fi
 }
 if [ "$CAP" = "$T" ]; then

@@ -121,6 +121,8 @@ once() {
   echo "$out" | grep -v '^[A-Z][A-Z]*='
   delta=$(sed -n 's/^DELTA=//p' <<<"$out")
   bad=$(sed -n 's/^BAD=//p' <<<"$out")
+  scpu=$(sed -n 's/^STRESS_CPU=//p' <<<"$out"); scpu=${scpu:--1}
+  step=$(sed -n 's/^STEP=//p' <<<"$out"); step=${step:-0}
   worst=$(sed -n 's/^WORST=//p' <<<"$out")
   [ -z "${delta:-}" ] && return 0
   [ "$delta" = 0 ] && return 0
@@ -148,7 +150,21 @@ once() {
     #       그 사이 p50 이 5초를 넘고 5xx 가 239건 났다. 첫 증설은 7분 뒤였다.
     #
     #   stress 에 용량이 더 필요하면 전용 노드로 준다. 남의 몫을 뺏지 않는다.
-    [[ ",$bad," == *,stress,* ]] && want_iso=$((cur_iso+1))
+    # ★격리 방아쇠는 둘이다.
+    #   (1) stress 자신이 SLA 를 못 지킬 때
+    #   (2) user/product 가 무너지는데 stress 가 CPU 를 크게 먹고 있을 때
+    #       stress 는 SLA 가 1000ms 라 느슨해서 (1) 에 안 걸리면서도 CPU 는 계속 먹는다.
+    #       그 상태에서 공유 노드를 붙이면 새 노드의 빈 CPU 를 stress 가 먼저 채우고
+    #       user 에게는 거의 안 돌아간다. 노드를 사도 지연이 안 내려간다.
+    #       실측(2026-08-21 ambush): 2→6대까지 늘렸는데 user p50 이 435ms 에서 멈췄다.
+    local victim=0
+    [[ ",$bad," == *,user,* ]] || [[ ",$bad," == *,product,* ]] && victim=1
+    if [[ ",$bad," == *,stress,* ]]; then
+      want_iso=$((cur_iso+1))
+    elif [ "$victim" = 1 ] && [ "${scpu:--1}" -ge "${ISO_CPU_TRIGGER:-50}" ]; then
+      want_iso=$((cur_iso+1))
+      echo "   stress 가 CPU ${scpu}% 를 먹는 중 — 공유 노드 대신 전용 노드로 뺀다"
+    fi
     if [[ ",$bad," == *,user,* ]] || [[ ",$bad," == *,product,* ]]; then
       want_shared=$((want_shared+1))
     fi
@@ -162,7 +178,12 @@ once() {
     #   효과를 재보기도 전에 지불하는 셈이다. 한 칸씩 사고 3분 뒤 채점한다.
     #   둘 다 밀리면 게이트에 가까운 쪽(stress)을 먼저 산다 — 비용 12점이 걸려 있다.
     # 게이트 방어(delta=2)는 두 칸까지 허용한다. 그 외는 한 칸.
+    # ★계단(앞먹임)으로 나온 증설은 깎지 않는다.
+    #   실측(2026-08-24 D회차): 계단이 +3 을 요청했는데 상한 2에 걸려 2→4 로만 갔고
+    #   8대까지 세 주기가 걸렸다. 그 6분 30초 동안 user p50 이 1.5~5초였다.
+    #   계단은 '지표가 나빠지기 전에' 미리 사는 것이라 한 칸씩 살 이유가 없다.
     local maxstep=1; [ "$delta" -ge 2 ] && maxstep=2
+    [ "${step:-0}" = 1 ] && maxstep=$delta
     if [ "$delta" -ge 2 ]; then
       # 둘 다 밀리면 이미 두 칸이 잡혀 있다. 한쪽만 밀리면 그쪽으로 한 칸 더 준다.
       if [ "$((want_shared+want_iso))" -le "$((cur_n+1))" ]; then
@@ -171,6 +192,18 @@ once() {
         else
           want_shared=$((want_shared+1))
         fi
+      fi
+    fi
+    # ★계단이면 요청한 대수를 반드시 채운다.
+    #   구성 로직은 bad 목록을 보고 '공유 +1 / 전용 +1' 식으로만 더하므로,
+    #   판단이 +3 을 요청해도 합이 +2 에서 멈추는 일이 생긴다.
+    #   실측(2026-08-24 E회차): 계단이 3→6대를 요청했는데 5대만 적용됐다.
+    #   모자란 만큼은 공유로 채운다 — 전용은 stress 수요에 맞춰 이미 정해졌다.
+    if [ "${step:-0}" = 1 ]; then
+      local _need=$((cur_n+delta)) _have=$((want_shared+want_iso))
+      if [ "$_have" -lt "$_need" ]; then
+        want_shared=$((want_shared + _need - _have))
+        echo "   계단 요청분을 채운다 — 공유를 ${_need} 대 구성에 맞춘다"
       fi
     fi
     if [ "$((want_shared+want_iso))" -gt "$((cur_n+maxstep))" ]; then

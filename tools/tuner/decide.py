@@ -52,6 +52,7 @@ AVAIL_DANGER = float(os.environ.get("AVAIL_DANGER", 97.0))
 GATE_FAR = float(os.environ.get("GATE_FAR", 20.0))   # 누적이 이보다 낮으면 두 칸씩
 GATE_ETA_MIN = float(os.environ.get("GATE_ETA_MIN", 30))  # 이 분 안에 뚫릴 것 같으면 미리 막는다
 STEP_RATIO = float(os.environ.get("STEP_RATIO", 2.5))    # 이 배수 이상 뛰면 계단으로 본다
+RPS_PER_NODE = float(os.environ.get("RPS_PER_NODE", 40))  # 실측: 8대가 311rps 를 p90 47ms 로 처리
 STEP_MIN_RPS = float(os.environ.get("STEP_MIN_RPS", 40))  # 잡음 방지 하한
 GATE_DANGER = float(os.environ.get("GATE_DANGER", 40))  # 누적이 이 밑이면 게이트 위험
 # ★히스테리시스. 목표 tier 는 90% 다.
@@ -238,6 +239,18 @@ def advise(led, snap, nodes, memory, probe=None):
     #   해법은 "계곡에도 켜두기"가 아니다(계곡이 길면 그게 더 손해다).
     #   트래픽은 즉시 관측된다 — 나빠지기를 기다릴 이유가 없다.
     #   지금 rps 를 지금 노드로 감당 못 하는 게 뻔하면 바로 그만큼 뛴다.
+    memory.pop("step_jump", None)   # ★매 주기 초기화 — 지난 계단이 남으면 안 된다
+    # ★노드당 처리량을 실측으로 학습한다.
+    #   대회에서는 앱 바이너리도 트래픽 곡선도 미리 알 수 없다. 요청당 CPU 가
+    #   이번 연습 앱과 다르면 고정 상수는 그대로 오답이 된다.
+    #   "지금 전 앱이 SLA 를 지키고 있다" = "이 노드 수로 이 rps 를 감당한다" 이므로,
+    #   그 순간의 rps/노드 를 관측값으로 모은다. 관측 중 가장 큰 값이 그 앱의 능력이다.
+    #   한 번도 못 쟀으면 RPS_PER_NODE 초기 추정치를 쓴다.
+    _live_ok = [a for a in score.APPS if perf.get(a) is not None]
+    if _live_ok and nodes > 0 and total_rps > 0 and all(perf[a] >= TARGET_PERF for a in _live_ok):
+        _obs = total_rps / nodes
+        if _obs > float(memory.get("cap_rps_per_node") or 0):
+            memory["cap_rps_per_node"] = round(_obs, 2)
     seen = memory.get("rps_seen") or {}
     prev_rps = memory.get("last_rps", 0.0)
     memory["last_rps"] = total_rps
@@ -257,10 +270,27 @@ def advise(led, snap, nodes, memory, probe=None):
             ratio = total_rps / max(prev_rps, 1.0)
             jump = 1 if ratio < 5 else (2 if ratio < 15 else 3)
             want = nodes + jump
+        # ★용량으로도 한 번 잡아본다. 둘 중 큰 쪽을 쓴다.
+        #   기억(seen)이 없거나 계단 배수만으로 잡으면 몇 주기를 더 써야 한다.
+        #   실측(2026-08-24 D회차): 311rps 를 8대(공유 5 + stress 전용 3)가
+        #   p90 47ms 로 처리했고, 6대에서는 p50 407ms 로 SLA 를 못 지켰다.
+        #   → 이 부하 구성에서 노드당 약 40rps 가 한계선이다.
+        # 노드당 처리량은 앱이 정한다 — 대회에서 어떤 바이너리가 나올지 모르므로
+        # 상수를 믿지 않고 이번 회차에서 직접 잰 값을 쓴다.
+        # RPS_PER_NODE 는 아직 한 번도 못 재봤을 때의 초기 추정치일 뿐이다.
+        est = float(memory.get("cap_rps_per_node") or RPS_PER_NODE)
+        need = -int(-total_rps // max(est, 1.0))   # 올림
+        want = max(want, need)
         want = min(want, int(os.environ.get("MAX_NODES", 8)))
         if want > nodes:
             why.append(f"트래픽 계단 {prev_rps:.0f} → {total_rps:.0f}rps ({total_rps/prev_rps:.0f}배) "
                        f"— 지표를 기다리지 않고 {nodes}→{want}대")
+            # ★계단으로 판단한 증설은 바깥에서 깎으면 안 된다.
+            #   실측(2026-08-24 D회차): 계단이 +3 을 요청했는데 한 주기 상한 2대에
+            #   걸려 2→4 로만 갔고, 8대까지 세 주기가 걸렸다. 그 사이 6분 30초 동안
+            #   user p50 이 1.5~5초였고 그 요청들이 전부 SLA 미달로 누적됐다.
+            #   앞먹임의 값어치는 속도다. 계단이면 요청한 만큼 한 번에 간다.
+            memory["step_jump"] = 1
             return want - nodes, why
     # ★내려가는 계단도 즉시 반영한다.
     #   올릴 때만 빠르고 내릴 때 한 칸씩이면, 피크가 끝난 뒤 한참을 비싸게 쓴다.
@@ -382,6 +412,26 @@ def advise(led, snap, nodes, memory, probe=None):
                    + f" 이고 지금도 못 내고 있다 — 비용 게이트(30%) 방어, {step}대 증설 [{shot}]")
         memory.pop("escalation_pays", None)
         return step, why
+
+    # ── 0b) 용량 부족 즉시 해소 ────────────────────────────────────────
+    #   계단은 '배수'로 잡으므로 전환 중의 부분값을 보면 필요량을 낮게 잡는다.
+    #   실측(2026-08-24 E회차): 계단이 109rps 를 보고 3대만 요청했고, 다음 주기는
+    #   169rps 였지만 배수가 1.5라 계단이 아니어서 다시 한 칸씩 올라갔다.
+    #   배수와 무관하게, 지금 용량이 모자라고 실제로 밀리고 있으면 필요량까지 간다.
+    #   ★반드시 '밀리는 중'일 때만 쓴다. 여유로울 때 쓰면 계곡에서 노드를 사들인다.
+    if total_rps > 0 and nodes > 0:
+        _est = float(memory.get("cap_rps_per_node") or RPS_PER_NODE)
+        _need = -int(-total_rps // max(_est, 1.0))
+        _need = min(_need, int(os.environ.get("MAX_NODES", 8)))
+        _hurting = bool(below) or not all(
+            (probe or {}).get(a, {}).get("pass", 100) >= PROBE_OK for a in PROBED)
+        # 크게 모자랄 때만 쓴다. 한두 대 차이는 기존 규율대로 한 칸씩 사고
+        # 3분 뒤 효과를 채점한다 — 그게 과잉 구매를 막는 장치다.
+        if _need >= nodes + 2 and _hurting:
+            why.append(f"용량 부족 — {total_rps:.0f}rps 에 노드당 {_est:.0f}rps 면 "
+                       f"{_need}대가 필요하다 ({nodes}→{_need}대)")
+            memory["step_jump"] = 1
+            return _need - nodes, why
 
     # ── 3) 목표 추격 ──────────────────────────────────────────────────────
     #   90% 를 못 넘긴 앱이 있으면 늘린다. 다만 이 회차에서 증설이 효과 없다는 게
@@ -554,6 +604,13 @@ def main():
     bad = below_now(perf, _live, _pb, probe, dict(memory))
     worst = min((x for x in score.APPS if perf.get(x) is not None),
                 key=lambda x: perf[x], default="")
+    # ★stress 가 CPU 를 얼마나 먹고 있는지도 밖으로 내보낸다.
+    #   user/product 만 무너지는 구간에서 공유 노드를 붙이면 그 빈 CPU 를
+    #   stress 가 먼저 채운다. 배치를 정하려면 이 값이 필요하다.
+    _sc = (probe or {}).get("stress", {}).get("cpu_pct")
+    print(f"STRESS_CPU={-1 if _sc is None else int(_sc)}")
+    print(f"STEP={int(bool(memory.get('step_jump')))}")
+    print(f"CAP_RPS_PER_NODE={memory.get('cap_rps_per_node') or 0}")
     print(f"BAD={','.join(bad)}")
     print(f"WORST={worst}")
     print(f"DELTA={delta}")
