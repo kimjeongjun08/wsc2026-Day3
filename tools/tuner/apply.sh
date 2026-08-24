@@ -111,12 +111,23 @@ fi
 #   노드를 늘리는 방아쇠가 'Pending 파드'이므로, HPA 가 허용 노드를 다 채우고도
 #   조금 더 원해야 Karpenter 가 새 노드를 만든다. 반대로 무한정(20)이면
 #   4 vCPU 에 파드 20개가 얹혀 용량이 아니라 큐만 는다(실측: 세 앱 모두 20 에 붙음).
-HPA_MAX=$(( (CAP-ISO) * ${HPA_PER_NODE:-3} + 2 ))
+# ★노드당 파드 수를 3 → 5 로 올린다.
+#   실측(2026-08-24 공식 120분): peak2 8대 구성에서
+#     노드 CPU 30~50%   ← CPU 는 남는다
+#     user 파드 17개    ← HPA 상한에 붙어 있었다
+#     user p50 194~205ms ← SLA 200ms 와 정확히 겹쳐 통과율이 48% 였다
+#   파드가 상한에 막혀 요청이 줄을 섰고, 그 대기가 지연의 대부분이었다.
+#   파드당 부하로 보면 baseline 2rps → peak2 7.6rps 로 3.8배인데 지연은 8배다.
+#   user 파드 하나의 cpu.requests 는 70m 이라 노드(1930m)에 5개를 얹어도 350m,
+#   전체의 18% 다. 노드를 더 사지 않고 대기만 줄이는 방법이다.
+#   DB 커넥션이 한도(db.t3.micro 약 85)에 걸리므로 max_connections 를 150 으로
+#   함께 올렸다(동적 파라미터, 재시작 없음).
+HPA_MAX=$(( (CAP-ISO) * ${HPA_PER_NODE:-5} + 2 ))
 [ "$HPA_MAX" -lt 2 ] && HPA_MAX=2
 bx "for h in user-hpa product-hpa; do
   kubectl -n $NS patch hpa \$h -p '{\"spec\":{\"maxReplicas\":$HPA_MAX}}' >/dev/null 2>&1
 done"
-echo "   HPA 상한 user/product = $HPA_MAX (공유 ${DOMAINS}대 x ${HPA_PER_NODE:-3})"
+echo "   HPA 상한 user/product = $HPA_MAX (공유 ${DOMAINS}대 x ${HPA_PER_NODE:-5})"
 
 # ★노드 수를 확실히 만든다 — 자리표시 파드로.
 #   minDomains 를 2 로 고정한 뒤로 상한만 올려서는 노드가 안 생긴다.
