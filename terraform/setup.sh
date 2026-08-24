@@ -224,7 +224,10 @@ helm upgrade --install karpenter oci://public.ecr.aws/karpenter/karpenter \
   --set serviceAccount.name=karpenter \
   --set "settings.clusterName=$CLUSTER_NAME" \
   --set "settings.interruptionQueue=$CLUSTER_NAME" \
-  --set replicas=1
+  --set replicas=1 \
+  --set controller.resources.requests.cpu=300m \
+  --set controller.resources.requests.memory=512Mi \
+  --set controller.resources.limits.memory=1Gi
 
 kubectl rollout status deploy/karpenter -n kube-system --timeout=300s
 echo "=== Karpenter installed ==="
