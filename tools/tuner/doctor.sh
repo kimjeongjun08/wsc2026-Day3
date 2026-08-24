@@ -126,7 +126,7 @@ echo "== 4e. 튜너가 '지금' 판단하고 있나  ← 잠금만 보면 속는
 # 기본 동작이었다. 로그에는 "다른 튜너가 잡고 있다"만 1437번 찍혀 정상처럼 보였다.
 # 잠금이 있는지가 아니라 '원장이 갱신되는지'를 봐야 한다.
 NPROC=$(pgrep -c -f 'autotune[.]sh run' 2>/dev/null | head -1)
-case "${NPROC:-0}" in (''|*[!0-9]*) NPROC=0;; esac
+case "$NPROC" in (''|*[!0-9]*) NPROC=0;; esac
 if [ "${NPROC:-0}" -gt 2 ]; then
   bad "운영 루프가 ${NPROC}개 돈다 — 중복 실행이다"
   echo "       고치기: pkill -f '[.]supervise[.]sh'; pkill -f 'autotune[.]sh run'  뒤 ./GO.sh watch"
@@ -144,7 +144,7 @@ else
 fi
 # 로그에 잠금 충돌이 쌓여 있으면 그것도 잡는다
 LC=$(grep -c "다른 튜너가 이미" autotune.log 2>/dev/null | head -1)
-case "${LC:-0}" in (''|*[!0-9]*) LC=0;; esac
+case "$LC" in (''|*[!0-9]*) LC=0;; esac
 [ "$LC" -gt 5 ] && bad "로그에 잠금 충돌 ${LC}건 — 중복 실행이 있었다"
 
 echo "== 4f. 채점에 세어지는 EC2 가 워커뿐인가  ← 가만히 앉아 4점을 잃던 자리"

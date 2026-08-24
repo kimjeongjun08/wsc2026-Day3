@@ -4,6 +4,7 @@
 #   ./GO.sh          트래픽 전: 준비 → 최적값 탐색 → 적용 → 안정화 확인
 #   ./GO.sh watch    트래픽 시작 후: 감시·조정 루프를 백그라운드로 켠다
 #   ./GO.sh status   지금 상태 한 눈에
+#   ./GO.sh monitor  실시간 관제 (튜너 생존이 1순위 · 10초 갱신 · Ctrl+C 종료)
 #   ./GO.sh score    지금까지의 누적 점수 전망 (회차 중 아무 때나)
 #   ./GO.sh check    판단 로직 자체 점검 (AWS 없이, 수 초)
 #   ./GO.sh doctor   ★트래픽 전 진단. 조용히 망가진 것을 찾는다 (클러스터 필요, 수 초)
@@ -244,6 +245,79 @@ SUP
   echo "회차 길이는 안 물어본다 — 15분이든 2시간이든 같은 판단으로 돈다."
   sleep 3
   tail -5 autotune.log
+  ;;
+
+monitor)
+  # 실시간 관제. 최우선은 "튜너가 지금 판단하고 있나" — 이게 죽어 있으면 나머지는 의미 없다.
+  # 10초마다 갱신, Ctrl+C 로 나간다. 읽기만 한다(원장·로그·k8s 조회) — 회차에 개입하지 않는다.
+  trap 'echo; echo "monitor 종료 (watch 는 계속 돈다)"; exit 0' INT
+  _mt() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0; }
+  while :; do
+    BUF=$(
+      echo "════ GO.sh monitor  $(date '+%H:%M:%S')  · 10초 갱신 · Ctrl+C 종료 ════"
+
+      # 1. 튜너 생존 ── 실측 사고(08-21): 잠금만 남기고 죽은 튜너를 120분간 아무도 몰랐다
+      NP=$(pgrep -c -f 'autotune[.]sh run' 2>/dev/null | head -1); case "$NP" in (''|*[!0-9]*) NP=0;; esac
+      SP=$(pgrep -c -f '[.]supervise[.]sh' 2>/dev/null | head -1); case "$SP" in (''|*[!0-9]*) SP=0;; esac
+      if [ "$NP" = 0 ] && [ "$SP" = 0 ]; then
+        echo "■ 튜너    [X] 안 돈다 — ./GO.sh watch 로 켜라"
+      elif [ "$NP" -gt 2 ]; then
+        echo "■ 튜너    [X] 루프 ${NP}개 — 중복 실행이다. pkill -f '[.]supervise[.]sh'; pkill -f 'autotune[.]sh run' 후 watch 다시"
+      elif [ -f .round-ledger.json ]; then
+        AGE=$(( $(date +%s) - $(_mt .round-ledger.json) ))
+        if [ "$AGE" -gt 180 ]; then
+          echo "■ 튜너    [X] 살아만 있고 판단을 안 한다 — 원장 ${AGE}초째 그대로 (autotune.log 를 봐라)"
+        else
+          echo "■ 튜너    [O] 판단 중 — 원장 ${AGE}초 전 갱신 (supervise ${SP} / loop ${NP})"
+        fi
+      else
+        echo "■ 튜너    [!] 돌고는 있는데 원장이 아직 없다 (트래픽 시작 전이면 정상)"
+      fi
+      if [ -f autotune.log ]; then
+        LAGE=$(( $(date +%s) - $(_mt autotune.log) ))
+        echo "  최근 로그 (${LAGE}초 전):"
+        grep -v '^$' autotune.log | tail -3 | cut -c1-110 | sed 's/^/    /'
+      fi
+
+      # 2. 노드 — 도구가 생각하는 상태와 실제가 맞는지 한 줄에서 비교
+      ST=$(cat .autotune-state 2>/dev/null)
+      NRDY=$(kubectl get nodes --no-headers 2>/dev/null | awk '$2=="Ready"{n++} END{print n+0}')
+      NALL=$(kubectl get nodes --no-headers 2>/dev/null | wc -l | tr -d ' ')
+      NCL=$(kubectl get nodeclaims --no-headers 2>/dev/null | wc -l | tr -d ' ')
+      if [ -n "$ST" ]; then
+        echo "■ 노드    실제 ${NRDY}/${NALL} Ready · nodeclaim ${NCL}   도구: 목표 $(awk '{print $1}' <<<"$ST")대 / $(awk '{print $2}' <<<"$ST") / 상한 $(awk '{print $3}' <<<"$ST")"
+      else
+        echo "■ 노드    실제 ${NRDY}/${NALL} Ready · nodeclaim ${NCL}   도구: 상태 파일 없음 (setup 전?)"
+      fi
+
+      # 3. 증설 컨트롤러 — 판단이 옳아도 이게 죽으면 실행이 안 된다 (doctor 4d 와 같은 자리)
+      for D in karpenter aws-load-balancer-controller; do
+        L=$(kubectl -n kube-system get deploy "$D" --no-headers 2>/dev/null)
+        if [ -z "$L" ]; then echo "■ ${D}  [X] 없음"; else
+          echo "$L" | awk -v d="$D" '{split($2,a,"/"); m=(a[1]!=""&&a[1]==a[2])?"[O]":"[X]"; printf "■ %-24s %s %s ready\n", d, m, $2}'
+        fi
+      done
+
+      # 4. HPA / 파드
+      echo "■ HPA (cpu → 파드수, min~max)"
+      kubectl -n apdev get hpa --no-headers 2>/dev/null \
+        | awk '{printf "    %-14s %-14s %3s개 (%s~%s)\n", $1, $3, $6, $4, $5}'
+      PEND=$(kubectl -n apdev get pods --no-headers 2>/dev/null | awk '$3=="Pending"{n++} END{print n+0}')
+      BADP=$(kubectl -n apdev get pods --no-headers -o custom-columns='N:.metadata.name,R:.status.containerStatuses[0].restartCount,RD:.status.containerStatuses[0].ready' 2>/dev/null \
+             | awk 'NR>0 && ($2!="0"||$3!="true"){n++} END{print n+0}')
+      echo "■ 파드    Pending ${PEND}개 · 재시작/NotReady ${BADP}개"
+      kubectl -n apdev get events --sort-by=.lastTimestamp 2>/dev/null \
+        | grep -Ei "Unhealthy|Killing|BackOff|FailedScheduling" | tail -2 | cut -c1-110 | sed 's/^/    /'
+
+      # 5. 누적 점수 (원장 기반 — CloudWatch 추가 호출 없음)
+      if [ -f .round-ledger.json ]; then
+        echo "■ 점수 전망"
+        ./GO.sh score 2>/dev/null | tail -7 | sed 's/^/    /'
+      fi
+    )
+    printf '\033[H\033[2J%s\n' "$BUF"
+    sleep 10
+  done
   ;;
 
 status)
