@@ -278,7 +278,12 @@ def advise(led, snap, nodes, memory, probe=None):
         # 노드당 처리량은 앱이 정한다 — 대회에서 어떤 바이너리가 나올지 모르므로
         # 상수를 믿지 않고 이번 회차에서 직접 잰 값을 쓴다.
         # RPS_PER_NODE 는 아직 한 번도 못 재봤을 때의 초기 추정치일 뿐이다.
-        est = float(memory.get("cap_rps_per_node") or RPS_PER_NODE)
+        # ★학습값은 추정을 '올리는' 방향으로만 쓴다.
+        #   한가한 구간에서 잰 rps/노드 는 그 노드의 능력이 아니라 그때 트래픽이
+        #   적었을 뿐이다. 실측(2026-08-24 F회차): baseline 에서 3.61rps/노드 로
+        #   학습됐고, 그 값으로 계산하면 311rps 에 86대가 필요하다고 나온다.
+        #   낮게 잡힌 학습값을 그대로 믿으면 가벼운 앱에서 노드를 왕창 사게 된다.
+        est = max(float(memory.get("cap_rps_per_node") or 0), RPS_PER_NODE)
         need = -int(-total_rps // max(est, 1.0))   # 올림
         want = max(want, need)
         want = min(want, int(os.environ.get("MAX_NODES", 8)))
@@ -420,7 +425,7 @@ def advise(led, snap, nodes, memory, probe=None):
     #   배수와 무관하게, 지금 용량이 모자라고 실제로 밀리고 있으면 필요량까지 간다.
     #   ★반드시 '밀리는 중'일 때만 쓴다. 여유로울 때 쓰면 계곡에서 노드를 사들인다.
     if total_rps > 0 and nodes > 0:
-        _est = float(memory.get("cap_rps_per_node") or RPS_PER_NODE)
+        _est = max(float(memory.get("cap_rps_per_node") or 0), RPS_PER_NODE)
         _need = -int(-total_rps // max(_est, 1.0))
         _need = min(_need, int(os.environ.get("MAX_NODES", 8)))
         _hurting = bool(below) or not all(
