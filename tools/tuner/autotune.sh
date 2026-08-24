@@ -237,11 +237,23 @@ once() {
     #   apply.sh 는 상한이 열려 있으면(CAP>T) NodeClaim 을 회수하지 않는다.
     #   예전엔 축소 결정을 내려도 상한이 열린 채라 노드가 그대로 남았고,
     #   그래서 계곡 40분이 평균 4.93대로 유지됐다. 여기서 CAP=T 로 닫는다.
-    if [ "$want_iso" -gt 0 ] && [[ ",$bad," != *,stress,* ]]; then
-      want_iso=$((want_iso-1))
-    else
-      want_shared=$((want_shared-1)); [ "$want_shared" -lt 2 ] && want_shared=2
-    fi
+    # ★내릴 대수는 판단이 정한다. 예전엔 무조건 한 대씩이었다.
+    #   실측(2026-08-24 G회차): 하강 계단이 "170 → 14rps, 7→2대로 즉시 반납"을
+    #   요청했는데 8→7 한 대만 줄었다. 비용은 분 평균이라 그 지연이 곧 점수다.
+    #   계곡이 5분이면 6대를 5분간 더 쓰는 셈이고 비용 점수가 통째로 날아간다.
+    local _drop=$((-delta)); [ "$_drop" -lt 1 ] && _drop=1
+    while [ "$_drop" -gt 0 ]; do
+      if [ "$want_iso" -gt 0 ] && [[ ",$bad," != *,stress,* ]] && [ "$want_iso" -gt "${isoneed:-0}" ]; then
+        want_iso=$((want_iso-1))                 # stress 수요를 넘는 전용부터 반납
+      elif [ "$want_shared" -gt 2 ]; then
+        want_shared=$((want_shared-1))
+      elif [ "$want_iso" -gt 0 ]; then
+        want_iso=$((want_iso-1))
+      else
+        break
+      fi
+      _drop=$((_drop-1))
+    done
     new_n=$((want_shared+want_iso))
     [ "$new_n" -lt 2 ] && new_n=2
     [ "$new_n" = "$cur_n" ] && { echo "   더 내릴 곳이 없다"; return 0; }
