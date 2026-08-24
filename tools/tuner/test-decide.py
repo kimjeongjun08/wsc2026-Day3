@@ -246,7 +246,7 @@ m = {"escalation_pays": False, "no_escalate_rps": 60.0}
 #   그 사이 요청이 전부 SLA 미달로 누적돼 게이트가 깨진다.
 #   크게 모자랄 때(2대 이상)는 필요량까지 한 번에 간다.
 run("peak2 로 트래픽 2배 → 필요량까지 한 번에", ledger(60, 3, {"user": 95}),
-    snap((9000, 0, BAD), (9000, 0, CALM), (600, 0, SCALM), win=45.0), 3, m, +5, "용량 부족")
+    snap((9000, 0, BAD), (9000, 0, CALM), (600, 0, SCALM), win=45.0), 3, m, +3, "용량 부족")
 m = {"escalation_pays": False, "no_escalate_rps": 400.0}
 run("트래픽 그대로면 판정 유지", ledger(60, 3, {"user": 95}),
     snap((9000, 0, BAD), (9000, 0, CALM), (600, 0, SCALM)), 3, m, 0, "이미 확인")

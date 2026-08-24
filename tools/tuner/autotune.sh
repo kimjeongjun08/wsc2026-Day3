@@ -123,6 +123,7 @@ once() {
   bad=$(sed -n 's/^BAD=//p' <<<"$out")
   scpu=$(sed -n 's/^STRESS_CPU=//p' <<<"$out"); scpu=${scpu:--1}
   step=$(sed -n 's/^STEP=//p' <<<"$out"); step=${step:-0}
+  isoneed=$(sed -n 's/^ISO_NEED=//p' <<<"$out"); isoneed=${isoneed:-0}
   worst=$(sed -n 's/^WORST=//p' <<<"$out")
   [ -z "${delta:-}" ] && return 0
   [ "$delta" = 0 ] && return 0
@@ -202,8 +203,21 @@ once() {
     if [ "${step:-0}" = 1 ]; then
       local _need=$((cur_n+delta)) _have=$((want_shared+want_iso))
       if [ "$_have" -lt "$_need" ]; then
-        want_shared=$((want_shared + _need - _have))
-        echo "   계단 요청분을 채운다 — 공유를 ${_need} 대 구성에 맞춘다"
+        # ★남는 몫을 전부 공유로 주면 안 된다.
+        #   실측(2026-08-24 F회차): 8대를 공유 7 + 전용 1 로 나눴더니 stress 가
+        #   굶어서 가용성이 37% 로 무너졌다. 같은 8대라도 전용 3대면 64% 였다.
+        #   stress 도 채점 대상이고 게이트에 걸린다 — user 를 살리자고 stress 를
+        #   죽이면 게이트는 그대로 깨진다.
+        #   먼저 stress 수요만큼 전용을 채우고, 나머지를 공유에 준다.
+        local _extra=$((_need - _have))
+        if [ "${isoneed:-0}" -gt "$want_iso" ] && [ "$_extra" -gt 0 ]; then
+          local _add=$((isoneed - want_iso))
+          [ "$_add" -gt "$_extra" ] && _add=$_extra
+          want_iso=$((want_iso + _add)); _extra=$((_extra - _add))
+          echo "   stress 수요에 맞춰 전용을 ${want_iso}대로 (필요 ${isoneed}대)"
+        fi
+        [ "$_extra" -gt 0 ] && want_shared=$((want_shared + _extra))
+        echo "   계단 요청분을 채운다 — 공유 ${want_shared} + 전용 ${want_iso}"
       fi
     fi
     if [ "$((want_shared+want_iso))" -gt "$((cur_n+maxstep))" ]; then

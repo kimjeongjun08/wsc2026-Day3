@@ -52,7 +52,18 @@ AVAIL_DANGER = float(os.environ.get("AVAIL_DANGER", 97.0))
 GATE_FAR = float(os.environ.get("GATE_FAR", 20.0))   # 누적이 이보다 낮으면 두 칸씩
 GATE_ETA_MIN = float(os.environ.get("GATE_ETA_MIN", 30))  # 이 분 안에 뚫릴 것 같으면 미리 막는다
 STEP_RATIO = float(os.environ.get("STEP_RATIO", 2.5))    # 이 배수 이상 뛰면 계단으로 본다
-RPS_PER_NODE = float(os.environ.get("RPS_PER_NODE", 40))  # 실측: 8대가 311rps 를 p90 47ms 로 처리
+# 노드당 처리 가능 rps 의 초기 추정치. 회차 중 실측으로 갱신된다.
+#   실측(2026-08-24 F회차): stress 를 전용 노드로 뺀 뒤 worker 4대가
+#   user 130rps + product 145rps 를 CPU 30% 대에 처리했다.
+#   즉 worker 한 대의 실제 능력은 70rps 를 훨씬 넘는다.
+#   앞서 2~3대에서 무너진 건 노드가 모자라서가 아니라 stress 가 CPU 를 훔쳐서였다.
+#   보수적으로 70 에서 출발한다 — 낮게 잡으면 필요 없는 노드를 사고,
+#   비용은 분 평균이라 그 낭비가 그대로 점수다.
+RPS_PER_NODE = float(os.environ.get("RPS_PER_NODE", 70))
+# stress 전용 노드 한 대가 감당하는 stress rps.
+#   실측(2026-08-24): peak2 에서 stress 7rps 가 CPU 약 3,700m(2노드분)을 썼다.
+#   stress 는 요청 하나가 무겁고(측정 0.83 core·s/req) 길이가 들쭉날쭉하다.
+STRESS_RPS_PER_NODE = float(os.environ.get("STRESS_RPS_PER_NODE", 3.5))
 STEP_MIN_RPS = float(os.environ.get("STEP_MIN_RPS", 40))  # 잡음 방지 하한
 GATE_DANGER = float(os.environ.get("GATE_DANGER", 40))  # 누적이 이 밑이면 게이트 위험
 # ★히스테리시스. 목표 tier 는 90% 다.
@@ -616,6 +627,12 @@ def main():
     print(f"STRESS_CPU={-1 if _sc is None else int(_sc)}")
     print(f"STEP={int(bool(memory.get('step_jump')))}")
     print(f"CAP_RPS_PER_NODE={memory.get('cap_rps_per_node') or 0}")
+    # ★stress 전용 노드는 stress 수요로 정한다.
+    #   실측(2026-08-24 F회차): 계단 요청분을 전부 공유로 채웠더니 전용이 1대뿐이라
+    #   stress 가용성이 37% 로 무너졌다(같은 8대라도 전용 3대면 64% 였다).
+    #   user 를 살리자고 stress 를 죽이면 게이트는 그대로 깨진다.
+    _srps = float(rps.get("stress") or 0.0)
+    print(f"ISO_NEED={max(1, -int(-_srps // STRESS_RPS_PER_NODE)) if _srps > 0 else 0}")
     print(f"BAD={','.join(bad)}")
     print(f"WORST={worst}")
     print(f"DELTA={delta}")
