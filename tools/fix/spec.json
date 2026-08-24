@@ -1,0 +1,68 @@
+{
+  "_설명": "대회 API 스펙 단일 소스. 앱/경로/메서드/필드가 바뀌면 이 파일만 고치고 `python3 spec.py --apply` 실행 → waf.tf 와 튜너(score.py)가 맞춰 갱신된다.",
+  "apps": {
+    "user": {
+      "path": "/v1/user",
+      "sla_s": 0.2,
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "query": [
+        "email"
+      ],
+      "body": [
+        "username",
+        "@"
+      ]
+    },
+    "product": {
+      "path": "/v1/product",
+      "sla_s": 0.2,
+      "methods": [
+        "GET",
+        "POST",
+        "PUT"
+      ],
+      "query": [
+        "id"
+      ],
+      "body": [
+        "name",
+        "price"
+      ]
+    },
+    "stress": {
+      "path": "/v1/stress",
+      "sla_s": 1.0,
+      "methods": [
+        "POST"
+      ],
+      "body": [
+        "length"
+      ]
+    }
+  },
+  "prefixes": [
+    "/images/"
+  ],
+  "extra": {
+    "_설명": "애플리케이션이 '추가'로 나올 때. enabled 를 true 로 바꾸고 값 채운 뒤 `python3 spec.py --apply` → `./extra-app.sh deploy`. 돌고 있는 튜너(watch)는 그대로 두면 이 앱까지 감시한다.",
+    "enabled": false,
+    "name": "extra",
+    "image": "<ECR 이미지 URI — docker push 후 채워라>",
+    "port": 8080,
+    "path": "/v1/extra",
+    "health_path": "/healthcheck",
+    "sla_s": 0.2,
+    "cpu_request_m": 70,
+    "mem_request_mi": 48,
+    "hpa_min": 2,
+    "hpa_max": 35,
+    "methods": [
+      "GET"
+    ],
+    "query": [],
+    "body": []
+  }
+}
