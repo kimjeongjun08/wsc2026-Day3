@@ -1,23 +1,26 @@
 """
-update_waf.py — '헤더 이름' 화이트리스트 (커버리지 게이팅판)
+update_waf.py — '헤더 이름' 화이트리스트 (최소시간 + 커버리지 이중 게이팅판)
 
-■ 개선점 (기존 3분 고정 샘플링의 문제 해결)
-  기존: 3분간 본 헤더만 화이트리스트 → 그 안에 안 온 요청조합(예: PUT /v1/product)이
-        나중에 오면 헤더가 화이트리스트에 없어 정상인데 차단됨.
-  개선: (메서드,경로) 조합별로 '봤는지'를 추적 → 기대 조합을 '다 볼 때까지' 대기 후 룰 생성.
-        · 다 보면 각 조합의 헤더가 전부 수집된 상태라 정상 안 막힘.
-        · 시간 상한(MAX_WAIT) 내 못 본 조합은 enforce 대상에서 제외 → 그 조합은 절대 안 막힘.
-        · BASE_ALLOW(표준 헤더)는 안전망으로 항상 허용.
+■ 종료 조건 (2026-08-25 개정)
+  · 커버리지(기대 6조합을 전부 관측)에 도달해도 **최소 MIN_WAIT(3분)는 계속 수집**한다.
+    예전엔 조합당 요청 1개만 보여도 즉시 룰을 굳혔다 — 표본 1개짜리 화이트리스트라
+    채점기가 요청마다 헤더를 조금 달리 보내면 정상이 403 됐다.
+  · 3분 시점에 커버리지 완료면 그때 끝. 미완료면 최대 MAX_WAIT(20분)까지 수집하다
+    완료되는 순간 끝. 20분에도 못 본 조합은 enforce 에서 면제(그 조합은 절대 안 막음).
 
-■ 왜 화이트리스트인가
-  · 비정상에 구멍이 없다(default block → 명시 허용 외 전부 차단). 블랙리스트는 새 공격 놓침.
-  · 경로/메서드/바디/공격패턴은 waf.tf가 담당. 여기선 '헤더 이름'만.
+■ 왜 '이름'만 보고 '값'은 안 보나 (UA 값 화이트리스트 제거, 2026-08-25)
+  · 값(특히 User-Agent)은 채점기가 로테이션할 수 있고 sampled_requests 는 표본이라
+    다양성을 다 못 담는다 → 미관측 값이 오면 정상인데 403. 원칙("어떤 부하툴이든
+    정상은 무조건 통과") 위반이라 뺐다. 값에 실린 공격은 waf.tf 의
+    BlockHeaderAttacks(시그니처 블랙리스트)가 이미 잡는다.
+  · 헤더 '이름'은 클라이언트 구현이 정하는 유한집합이라 3분 표본으로 안정된다.
 
-■ HPA/정상 보호
-  · 헤더 '이름'만 검사(값 아님) → 정상 헤더값에 우연히 키워드 껴도 자폭 안 함.
-  · enforce는 '충분히 관측된 (메서드,경로)'에만 적용 → 관측 안 된 정상요청은 통과.
+■ 역할 분담
+  · 경로/메서드/바디/공격패턴/헤더값 공격 → waf.tf (정적, 검증됨)
+  · 헤더 '이름' 화이트리스트 → 이 도구 (동적 — 채점 헤더를 미리 모르므로)
+  · BASE_ALLOW(표준 헤더)는 표본에 없어도 항상 허용 — 차단을 줄이는 방향으로만 작용.
 
-사용법: python update_waf.py [--auto] [--wait 분]   (해제: python update_waf.py --remove)
+사용법: python update_waf.py [--auto] [--min 분] [--wait 분]   (해제: --remove)
 """
 import boto3, json, sys, time
 from datetime import datetime, timedelta, timezone
@@ -33,6 +36,7 @@ ACL_NAME = "apdev-cf-acl"
 SCOPE = "CLOUDFRONT"
 
 SAMPLE_EVERY = 30          # 폴링 주기(초)
+MIN_WAIT = 180             # 최소 수집 시간(초). 커버리지가 일찍 차도 이만큼은 표본을 더 모은다.
 MAX_WAIT = 1200            # 커버리지 최대 대기(초). 이 안에 다 안 오면 본 것만 enforce.
 
 # enforce 대상 기대 (메서드, 경로) 조합. 이게 다 관측되면 룰 확정.
@@ -53,6 +57,15 @@ BASE_ALLOW = {
     "x-amzn-trace-id", "x-amz-cf-id", "cloudfront-forwarded-proto",
     "baggage", "x-vercel-id", "traceparent", "tracestate",
     "x-request-id", "x-correlation-id", "x-amzn-requestid",
+    # 브라우저형 클라이언트 표준 (채점기가 브라우저 UA 로 올 때 같이 온다)
+    "sec-fetch-dest", "sec-fetch-mode", "sec-fetch-site", "sec-fetch-user",
+    "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform", "dnt",
+    "accept-charset", "if-match", "if-range", "if-unmodified-since",
+    # CloudFront 가 뷰어 요청에 얹을 수 있는 것들
+    "cloudfront-viewer-country", "cloudfront-is-mobile-viewer",
+    "cloudfront-is-desktop-viewer", "cloudfront-is-tablet-viewer",
+    "cloudfront-is-smarttv-viewer", "cloudfront-viewer-http-version",
+    "x-real-ip", "forwarded",
 }
 
 # 헤더 '이름'에 이 키워드가 들어가면 화이트리스트에서 제외(공격 마커성 헤더). 값은 검사 안 함.
@@ -83,12 +96,14 @@ def _norm_path(uri):
     return p
 
 
-def collect_until_covered(waf, acl_arn, allow_metrics, max_wait):
-    """기대 (메서드,경로)를 다 볼 때까지(또는 max_wait까지) 샘플링하며 조합별 헤더 이름 수집.
-       반환: seen = {(method,path): set(header_names)}"""
+def collect_until_covered(waf, acl_arn, allow_metrics, max_wait, min_wait=MIN_WAIT):
+    """조합별 헤더 이름 수집.
+       종료: (경과 >= min_wait 이고 기대 조합 전부 관측) 또는 (경과 >= max_wait).
+       — 커버리지가 일찍 차도 min_wait 까지는 표본을 계속 쌓는다.
+       반환: seen = {(method,path): {"names": set, "values": {name: set}}}"""
     if not allow_metrics:
         print("⚠ ACL에 Allow 룰이 없어 샘플 대상이 없음."); return {}
-    print(f"⏳ 요청 조합 커버리지 수집 (최대 {max_wait//60}분, {SAMPLE_EVERY}초 간격)")
+    print(f"⏳ 헤더 표본 수집 (최소 {min_wait//60}분 / 최대 {max_wait//60}분, {SAMPLE_EVERY}초 간격)")
     print(f"   대상 조합: {[f'{m} {p}' for m,p in EXPECTED]}")
     seen = {}
     start = time.time()
@@ -124,20 +139,23 @@ def collect_until_covered(waf, acl_arn, allow_metrics, max_wait):
         covered = [e for e in EXPECTED if e in seen]
         missing = [e for e in EXPECTED if e not in seen]
         elapsed = int(time.time() - start)
-        print(f"  [{elapsed:>4}s] 커버 {len(covered)}/{len(EXPECTED)} | 남은: {[f'{m} {p}' for m,p in missing] or '없음 ✅'}")
-        if not missing:
-            print("  ✅ 모든 기대 조합 관측 완료 → 룰 생성")
+        tag = "표본 축적 중" if (not missing and elapsed < min_wait) else ""
+        print(f"  [{elapsed:>4}s] 커버 {len(covered)}/{len(EXPECTED)} | 남은: {[f'{m} {p}' for m,p in missing] or '없음 ✅'} {tag}")
+        if not missing and elapsed >= min_wait:
+            print(f"  ✅ 커버리지 완료 + 최소 {min_wait//60}분 표본 확보 → 룰 생성")
             return seen
         if elapsed >= max_wait:
-            print(f"  ⏱ 시간 상한 도달 → 관측된 {len(covered)}개 조합만 enforce, 미관측 조합은 면제(안 막음)")
+            print(f"  ⏱ 상한 {max_wait//60}분 도달 → 관측된 {len(covered)}개 조합만 enforce, 미관측 조합은 면제(안 막음)")
             return seen
+        time.sleep(SAMPLE_EVERY)   # ★원본엔 이게 없어서 API 를 쉼 없이 폴링했다
 
 
-def build_header_rule(enforce_pairs, allowed_headers, allowed_values):
-    """헤더 화이트리스트 룰(priority 0):
-       1) enforce_pairs 요청에서 화이트리스트에 없는 헤더 이름 → 403
-       2) 특정 헤더(user-agent 등)의 값이 수집된 화이트리스트와 불일치 → 403
-       두 조건을 OR로 묶어 하나의 룰에서 처리."""
+def build_header_rule(enforce_pairs, allowed_headers):
+    """헤더 '이름' 화이트리스트 룰: enforce_pairs 요청에서 허용 목록에 없는
+       헤더 이름이 하나라도 있으면 403.
+       ★값 검증(User-Agent 등)은 2026-08-25 에 제거했다 — 채점기가 값을
+       로테이션하면 표본 밖 정상값이 차단된다. 값 공격은 waf.tf 의
+       BlockHeaderAttacks 시그니처가 담당한다."""
     combos = []
     for (method, path) in enforce_pairs:
         combos.append({"AndStatement": {"Statements": [
@@ -157,40 +175,11 @@ def build_header_rule(enforce_pairs, allowed_headers, allowed_values):
                                      "MatchScope": "KEY", "OversizeHandling": "CONTINUE"}},
         "TextTransformations": [{"Priority": 0, "Type": "NONE"}]}}
 
-    # 조건2: 특정 헤더 값 화이트리스트 (user-agent 등)
-    # user-agent 값이 수집된 패턴과 불일치하면 차단
-    value_checks = []
-    # 값 검증 대상: user-agent (가장 중요)
-    ua_values = allowed_values.get("user-agent", set())
-    if ua_values:
-        # 수집된 UA 값들로 regex 패턴 생성 (prefix 매칭 — "curl/", "python-requests/" 등)
-        # 각 UA의 첫 단어(슬래시 전)를 prefix로 사용
-        ua_prefixes = set()
-        for v in ua_values:
-            prefix = v.split("/")[0].split(" ")[0].strip()
-            if prefix and len(prefix) >= 2:
-                ua_prefixes.add(prefix)
-        if ua_prefixes:
-            # 허용 패턴: ^(curl|python|aiohttp|...)
-            ua_regex = "^(" + "|".join(sorted(ua_prefixes)) + ")"
-            # NOT match → 차단. WAF에서 NOT은 NotStatement로.
-            value_checks.append({"NotStatement": {"Statement": {
-                "RegexMatchStatement": {
-                    "RegexString": ua_regex,
-                    "FieldToMatch": {"SingleHeader": {"Name": "user-agent"}},
-                    "TextTransformations": [{"Priority": 0, "Type": "LOWERCASE"}]
-                }
-            }}})
+    block_condition = anomaly_name
 
-    # 최종 룰: scope AND (알 수 없는 이름 OR 값 불일치)
-    if value_checks:
-        block_condition = {"OrStatement": {"Statements": [anomaly_name] + value_checks}}
-    else:
-        block_condition = anomaly_name
-
-    # ★ Priority 6: base가 0~2(KnownBadInputs/BlockAttacks/BlockUnknownPath) + Allow는 10~12로 미뤄둠.
-    #   Allow는 terminating이라 헤더룰이 Allow보다 뒤면 정상경로 요청에서 firing 못 함(404남) → 반드시 Allow(10~12)
-    #   앞(gap 3~9)에 둬야 함. 그래서 6. (waf.tf가 이 gap을 비워둠)
+    # ★ Priority 5: waf.tf 가 0~2(경로404/공격403/헤더값403)와 10~12(Allow)를 쓰고
+    #   3~9 를 비워뒀다. Allow 는 terminating 이라 이 룰이 Allow 보다 뒤면 영영
+    #   안 돈다 — 반드시 그 사이(3~9)에 있어야 한다.
     return {
         "Name": "BlockUnknownHeaders", "Priority": 5, "Action": {"Block": {}},
         "Statement": {"AndStatement": {"Statements": [scope, block_condition]}},
@@ -213,11 +202,18 @@ def install(rule):
 def main():
     auto = "--auto" in sys.argv
     max_wait = MAX_WAIT
+    min_wait = MIN_WAIT
     if "--wait" in sys.argv:
         try:
             max_wait = int(sys.argv[sys.argv.index("--wait") + 1]) * 60
         except (ValueError, IndexError):
             pass
+    if "--min" in sys.argv:
+        try:
+            min_wait = int(sys.argv[sys.argv.index("--min") + 1]) * 60
+        except (ValueError, IndexError):
+            pass
+    min_wait = min(min_wait, max_wait)
 
     waf = boto3.client("wafv2", region_name=REGION)
     acl_id, acl_arn = get_acl(waf)
@@ -225,7 +221,7 @@ def main():
     print("=== 헤더 화이트리스트 (커버리지 게이팅) ===")
 
     metrics = get_allow_metrics(waf, acl_id)
-    seen = collect_until_covered(waf, acl_arn, metrics, max_wait)
+    seen = collect_until_covered(waf, acl_arn, metrics, max_wait, min_wait)
 
     enforce_pairs = [e for e in EXPECTED if e in seen]   # 관측된 기대 조합만 enforce
     if not enforce_pairs:
@@ -246,7 +242,7 @@ def main():
         print(f"면제 조합(미관측 → 안 막음): {exempt}")
     print(f"허용 헤더 이름({len(allowed)}): {sorted(allowed)}")
     if "user-agent" in allowed_values:
-        print(f"허용 User-Agent 값: {sorted(allowed_values['user-agent'])}")
+        print(f"(참고) 관측된 User-Agent 값: {sorted(allowed_values['user-agent'])} — 룰에는 안 쓴다")
 
     if not auto:
         try:
@@ -264,8 +260,8 @@ def main():
         except Exception:
             pass
 
-    install(build_header_rule(enforce_pairs, allowed, allowed_values))
-    print("\n✅ 적용 완료. enforce 조합에서 허용 외 헤더 이름/값 → 403.")
+    install(build_header_rule(enforce_pairs, allowed))
+    print("\n✅ 적용 완료. enforce 조합에서 허용 외 헤더 이름 → 403 (값은 waf.tf 시그니처 담당).")
     print("   정상이 막히면 즉시 해제: python update_waf.py --remove")
 
 
