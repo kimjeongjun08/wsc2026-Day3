@@ -1,17 +1,20 @@
 # 인프라 튜너 — 처음 쓰는 사람용
 
-> ## ⚠ 시작하기 전에 딱 3가지
->
-> 1. **DB 커넥션 한도 올리기 (terraform 에 없다 — 까먹으면 피크에서 연결 거부)**
->    ```bash
->    aws rds modify-db-parameter-group --db-parameter-group-name apdev-mysql8 \
->      --parameters "ParameterName=max_connections,ParameterValue=150,ApplyMethod=immediate"
->    ```
-> 2. **`./GO.sh doctor` 에 [X] 가 하나라도 있으면 트래픽 시작 금지.**
->    특히 낯선 EC2(4f) — 대회에선 채점에 그대로 세어진다. 진짜 꺼라.
-> 3. **`./GO.sh watch` 는 회차 시작 때 정확히 한 번만.** 켠 뒤 다른 터미널에서
->    `./GO.sh monitor` 를 띄워 "튜너 [O] 판단 중" 인지 확인해라 —
->    죽은 튜너를 120분간 모르고 지나간 사고가 실제로 있었다.
+## ⚠ 대회 당일 — 이것만은 꼭
+
+**순서: `terraform apply` → setup 완료 → ①②③ → 트래픽 시작 → ④**
+
+| | 할 일 | 명령 |
+|---|---|---|
+| ① | DB 커넥션 한도 상향 (**terraform 에 없다** — 빼먹으면 피크에서 연결 거부) | `aws rds modify-db-parameter-group --db-parameter-group-name apdev-mysql8 --parameters "ParameterName=max_connections,ParameterValue=150,ApplyMethod=immediate"` |
+| ② | 준비 + 진단 | `./GO.sh setup` → `./GO.sh doctor` |
+| ③ | **doctor 에 [X] 있으면 시작 금지.** 낯선 EC2(4f)는 채점에 세어진다 — 꺼라 | `aws ec2 stop-instances --instance-ids <ID>` |
+| ④ | 트래픽 시작되면 감시 켜기 — **watch 는 딱 한 번** | `./GO.sh watch` → 딴 터미널 `./GO.sh monitor` |
+
+> monitor 첫 화면이 **"튜너 [O] 판단 중"** 이어야 한다. [X] 면 그 자리에서 잡아라 —
+> 죽은 튜너를 120분간 모르고 지나간 사고가 실제로 있었다.
+
+---
 
 이 도구는 **대회 중에 "노드를 몇 대 띄우고 앱을 어떻게 배치할지"를 대신 정해준다.**
 직접 부하를 넣어 재보고, 트래픽이 들어오면 실시간으로 따라간다.
