@@ -147,6 +147,26 @@ LC=$(grep -c "다른 튜너가 이미" autotune.log 2>/dev/null | head -1)
 case "${LC:-0}" in (''|*[!0-9]*) LC=0;; esac
 [ "$LC" -gt 5 ] && bad "로그에 잠금 충돌 ${LC}건 — 중복 실행이 있었다"
 
+echo "== 4f. 채점에 세어지는 EC2 가 워커뿐인가  ← 가만히 앉아 4점을 잃던 자리"
+# 채점기는 계정에서 도는 EC2 를 전부 센다(running + pending). bastion 처럼
+# 트래픽과 무관한 인스턴스가 떠 있으면 워커 2대로 완벽하게 돌아도 3대로 잡혀
+# cost_ratio 가 1.5 가 되고 비용 12점 중 4점이 날아간다.
+# 과제지도 "EC2 인스턴스는 t3.medium 타입만" 을 요구한다.
+_extra=$(aws ec2 describe-instances \
+  --filters Name=instance-state-name,Values=running,pending \
+  --query "Reservations[].Instances[?InstanceType!='t3.medium'].[InstanceId,InstanceType,Tags[?Key=='Name']|[0].Value]" \
+  --output text 2>/dev/null)
+if [ -n "$_extra" ]; then
+  echo "   [X] 워커가 아닌 EC2 가 떠 있다 — 비용 지표에 그대로 잡힌다"
+  echo "$_extra" | while read -r _i _t _n; do
+    [ -n "$_i" ] && echo "       $_i ($_t, ${_n:-이름없음})"
+  done
+  echo "       고치기: aws ec2 stop-instances --instance-ids <ID>"
+  BAD=$((BAD+1))
+else
+  echo "   [O] t3.medium 워커만 떠 있다"
+fi
+
 echo "== 5. 노드 수와 상한이 도구 상태와 맞나"
 ST=$(cat "${STATE:-.autotune-state}" 2>/dev/null || echo "")
 T=$(awk '{print $1}' <<<"$ST"); M=$(awk '{print $2}' <<<"$ST"); C=$(awk '{print $3}' <<<"$ST")

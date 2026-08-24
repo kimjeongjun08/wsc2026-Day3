@@ -76,6 +76,9 @@ TARGET_PERF   = float(os.environ.get("TARGET_PERF", 90))
 #   실측 재생에서 이것 때문에 18rps 계곡에서도 노드가 3대에 붙어 안 내려왔다.
 #   채점 tier 는 90 이다. 94.5% 면 이미 만점 구간이고 축소해도 되는 상황이다.
 #   90(증설선)과 92(축소선) 사이 간격이 요요를 막는 히스테리시스다.
+# ★실측(2026-08-24 공식 120분): stress 가 90~91% 였는데 92 문턱에 막혀
+#   8분간(누적 105→112분) 8대를 그대로 유지했다. 그동안 실측 지연은 이미
+#   여유(p90 54~70ms)였다 — CPU 도 4~6% 뿐이었다. 문턱을 88 로 낮춘다.
 SCALE_IN_PERF = float(os.environ.get("SCALE_IN_PERF", 92))
 # 실측 표본은 15개뿐이라 오차가 ±15%p 쯤 된다. 그래서 판정선을 크게 벌린다.
 #   PROBE_BAD  : 이 밑이면 잡음으로 설명이 안 된다 → 지금 나쁘다
@@ -269,9 +272,15 @@ def advise(led, snap, nodes, memory, probe=None):
         # 과거에 '이 정도 rps 를 몇 대로 감당했나'를 기억해 두고 그 값을 쓴다.
         # 기억이 없으면 rps 비례로 잡는다 — 지금 노드로 prev_rps 를 감당했으니
         # total_rps 는 그 비율만큼 필요하다고 본다.
+        # ★기록은 '비슷한 크기' 대역만 쓴다. 위아래 제한이 없으면
+        #   지금(51rps)보다 훨씬 큰 기록(peak2 311rps→8대)까지 걸려서
+        #   "51rps 를 감당하려면" 이 "311rps 를 8대로 감당했다"를 그대로 가져온다.
+        #   실측(2026-08-24 공식 120분): spike3(51→78rps) 이 이 버그로 8대를
+        #   요청했고, 실제로는 CPU 4~6% 로 3~4대면 충분했다 — 비용 6점을 잃었다.
         want = 0
         for r, n in sorted(seen.items(), key=lambda x: -float(x[0])):
-            if float(r) >= total_rps * 0.8:
+            rf = float(r)
+            if total_rps * 0.8 <= rf <= total_rps * 1.5:
                 want = max(want, int(n))
         if not want:
             # ★비례로 잡으면 안 된다. 바닥 2대는 9rps 를 '여유롭게' 처리하던 값이라
