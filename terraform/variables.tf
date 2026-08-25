@@ -25,7 +25,8 @@ variable "eks_version" {
 
 variable "node_instance_type" {
   type        = string
-  description = "EKS 노드 인스턴스 타입 (기본값: t3.medium)"
+  description = "EKS 노드 인스턴스 타입 — 과제지: t3.medium 만 허용"
+  default     = "t3.medium"
 }
 
 variable "node_desired_size" {
@@ -50,12 +51,14 @@ variable "db_name" {
 
 variable "db_instance_class" {
   type        = string
-  description = "RDS 인스턴스 클래스 (기본값: db.t3.micro)"
+  description = "RDS 인스턴스 클래스 — 과제지: db.t3.micro 고정 (다르면 성능+비용 0점)"
+  default     = "db.t3.micro"
 }
 
 variable "db_allocated_storage" {
   type        = number
-  description = "RDS 스토리지 GB (연습: 200, 대회: 500+면 IOPS/처리량 조작 가능, 최대: 65536)"
+  description = "RDS 스토리지 GB (검증 회차 값: 200. 500+면 gp3 IOPS/처리량 조작 가능)"
+  default     = 200
 }
 
 variable "app_image_tag" {
